@@ -1,0 +1,59 @@
+# =============================================================================
+# CI Workflow — Lab 8: CI/CD Deployment
+# =============================================================================
+# This workflow runs on every push and pull request to the main branch.
+# It validates code quality (lint) and verifies the Docker image builds.
+#
+# YOUR TASK: This file is provided as a reference. Read through it to
+# understand each step, then use it as a starting point. You may need to
+# modify it if your project structure differs.
+# =============================================================================
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Job 1: Test
+  # Runs the linter to catch code quality issues early
+  # ---------------------------------------------------------------------------
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      - name: Install dependencies
+        run: npm install
+        working-directory: ./react-nextjs-mongo
+
+      - name: Run linter
+        run: npm run lint
+        working-directory: ./react-nextjs-mongo
+
+  # ---------------------------------------------------------------------------
+  # Job 2: Build
+  # Builds the Docker image to verify the Dockerfile is correct.
+  # Only runs if the test job passes (needs: test).
+  # ---------------------------------------------------------------------------
+  build:
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t todo-app:ci-${{ github.sha }} ./react-nextjs-mongo

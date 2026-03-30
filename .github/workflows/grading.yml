@@ -1,0 +1,146 @@
+# =============================================================================
+# Automated Grading Workflow — Lab 8
+# =============================================================================
+# This workflow checks that students have completed the lab requirements.
+# It runs on every push and validates the CI/CD setup.
+# =============================================================================
+
+name: Grading
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  grade:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: "Check 1: CI workflow exists"
+        run: |
+          if [ -f ".github/workflows/ci.yml" ]; then
+            echo "✓ CI workflow file exists"
+          else
+            echo "✗ Missing .github/workflows/ci.yml"
+            exit 1
+          fi
+
+      - name: "Check 2: CI workflow has lint step"
+        run: |
+          if grep -q "lint" .github/workflows/ci.yml; then
+            echo "✓ CI workflow includes linting"
+          else
+            echo "✗ CI workflow missing lint step"
+            exit 1
+          fi
+
+      - name: "Check 3: CI workflow has Docker build step"
+        run: |
+          if grep -q "docker build" .github/workflows/ci.yml; then
+            echo "✓ CI workflow includes Docker build"
+          else
+            echo "✗ CI workflow missing Docker build step"
+            exit 1
+          fi
+
+      - name: "Check 4: Deploy workflow exists"
+        run: |
+          if [ -f ".github/workflows/deploy.yml" ]; then
+            echo "✓ Deploy workflow file exists"
+          else
+            echo "✗ Missing .github/workflows/deploy.yml"
+            exit 1
+          fi
+
+      - name: "Check 5: Deploy workflow has AWS credential config"
+        run: |
+          if grep -q "aws-actions/configure-aws-credentials" .github/workflows/deploy.yml; then
+            echo "✓ Deploy workflow includes AWS credential configuration"
+          else
+            echo "✗ Deploy workflow missing AWS credential configuration"
+            exit 1
+          fi
+
+      - name: "Check 6: Deploy workflow has ECR login"
+        run: |
+          if grep -q "amazon-ecr-login" .github/workflows/deploy.yml; then
+            echo "✓ Deploy workflow includes ECR login"
+          else
+            echo "✗ Deploy workflow missing ECR login step"
+            exit 1
+          fi
+
+      - name: "Check 7: Deploy workflow has ECR push"
+        run: |
+          if grep -q "docker push" .github/workflows/deploy.yml; then
+            echo "✓ Deploy workflow includes Docker push to ECR"
+          else
+            echo "✗ Deploy workflow missing Docker push step"
+            exit 1
+          fi
+
+      - name: "Check 8: Deploy workflow has App Runner deployment"
+        run: |
+          if grep -q "apprunner" .github/workflows/deploy.yml; then
+            echo "✓ Deploy workflow includes App Runner deployment"
+          else
+            echo "✗ Deploy workflow missing App Runner deployment step"
+            exit 1
+          fi
+
+      - name: "Check 9: CloudFormation template exists with answers"
+        run: |
+          if [ -f "cloudformation/infrastructure.yml" ]; then
+            echo "✓ CloudFormation template exists"
+          else
+            echo "✗ Missing cloudformation/infrastructure.yml"
+            exit 1
+          fi
+
+          # Check that at least one answer has been filled in
+          ANSWERS=$(grep -c "YOUR ANSWER:" cloudformation/infrastructure.yml || true)
+          if [ "$ANSWERS" -lt 4 ]; then
+            echo "✓ At least some CloudFormation questions answered"
+          else
+            echo "✗ CloudFormation questions not answered (still have $ANSWERS blank answers)"
+            exit 1
+          fi
+
+      - name: "Check 10: db.js uses MONGODB_URI environment variable"
+        run: |
+          if grep -q "process.env.MONGODB_URI\|MONGODB_URI" react-nextjs-mongo/src/lib/db.js; then
+            echo "✓ db.js reads MONGODB_URI from environment"
+          else
+            echo "✗ db.js does not use MONGODB_URI environment variable"
+            exit 1
+          fi
+
+      - name: "Check 11: Dockerfile builds successfully"
+        run: |
+          docker build -t todo-app:grading ./react-nextjs-mongo
+          echo "✓ Docker image builds successfully"
+
+      - name: "Check 12: COMPARISON.md exists with content"
+        run: |
+          if [ -f "COMPARISON.md" ]; then
+            LINES=$(wc -l < COMPARISON.md)
+            if [ "$LINES" -gt 3 ]; then
+              echo "✓ COMPARISON.md exists with content ($LINES lines)"
+            else
+              echo "✗ COMPARISON.md exists but appears incomplete ($LINES lines)"
+              exit 1
+            fi
+          else
+            echo "✗ Missing COMPARISON.md (Part 6b and Part 7)"
+            exit 1
+          fi
+
+      - name: Grade summary
+        if: success()
+        run: |
+          echo "============================================"
+          echo "  All 12 grading checks passed!"
+          echo "============================================"

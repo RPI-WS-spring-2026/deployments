@@ -1,0 +1,113 @@
+# =============================================================================
+# Deploy Workflow — Lab 8: CI/CD Deployment
+# =============================================================================
+# This workflow runs on pushes to main. It:
+#   1. Tests the code (lint)
+#   2. Builds a Docker image
+#   3. Pushes the image to Amazon ECR
+#   4. Triggers a new deployment on AWS App Runner
+#
+# REQUIRED GITHUB SECRETS (Settings → Secrets → Actions):
+#   - AWS_ACCESS_KEY_ID
+#   - AWS_SECRET_ACCESS_KEY
+#   - AWS_SESSION_TOKEN
+#   - AWS_ACCOUNT_ID
+#   - MONGODB_URI
+# =============================================================================
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: todo-app
+  APP_RUNNER_SERVICE: todo-app
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Job 1: Test — gate deployment on code quality
+  # ---------------------------------------------------------------------------
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      - name: Install dependencies
+        run: npm install
+        working-directory: ./react-nextjs-mongo
+
+      - name: Run linter
+        run: npm run lint
+        working-directory: ./react-nextjs-mongo
+
+  # ---------------------------------------------------------------------------
+  # Job 2: Deploy — build image, push to ECR, deploy to App Runner
+  # Only runs after tests pass and only on the main branch
+  # ---------------------------------------------------------------------------
+  deploy:
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Authenticate with AWS using credentials stored in GitHub Secrets
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Get a temporary Docker login token for ECR
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # Build the Docker image and push it to ECR with two tags:
+      #   1. The git commit SHA (for traceability and rollback)
+      #   2. "latest" (what App Runner pulls by default)
+      - name: Build, tag, and push Docker image to ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          echo "Building Docker image..."
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG ./react-nextjs-mongo
+          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+          echo "Pushing to ECR..."
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+          echo "✓ Image pushed: $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+
+      # Tell App Runner to pull the latest image and redeploy
+      - name: Deploy to App Runner
+        run: |
+          SERVICE_ARN=$(aws apprunner list-services \
+            --query "ServiceSummaryList[?ServiceName=='${{ env.APP_RUNNER_SERVICE }}'].ServiceArn" \
+            --output text)
+
+          if [ -z "$SERVICE_ARN" ] || [ "$SERVICE_ARN" = "None" ]; then
+            echo "ERROR: App Runner service '${{ env.APP_RUNNER_SERVICE }}' not found."
+            echo "Make sure you created the service in the AWS Console (Part 3)."
+            exit 1
+          fi
+
+          echo "Triggering deployment for service: $SERVICE_ARN"
+          aws apprunner start-deployment --service-arn "$SERVICE_ARN"
+          echo "✓ Deployment triggered. Check the App Runner console for status."

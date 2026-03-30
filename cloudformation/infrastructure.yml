@@ -1,0 +1,135 @@
+# =============================================================================
+# CloudFormation Template — Lab 8: CI/CD Deployment
+# =============================================================================
+# This template defines the same AWS infrastructure you created manually
+# in the Console. It demonstrates Infrastructure as Code (IaC):
+# resources defined in a version-controlled file that can be created,
+# updated, and deleted as a single unit (a "stack").
+#
+# NOTE: This template is for learning purposes. You do NOT need to deploy
+# it — you already created these resources through the Console. Read it
+# to understand how CloudFormation works.
+# =============================================================================
+
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Infrastructure for the Todo App CI/CD lab.
+  Creates an ECR repository and an App Runner service.
+
+# ---------------------------------------------------------------------------
+# Parameters — values provided at deploy time (like function arguments)
+# ---------------------------------------------------------------------------
+Parameters:
+  AppName:
+    Type: String
+    Default: todo-app
+    Description: Name used for the ECR repo and App Runner service
+
+  ContainerPort:
+    Type: Number
+    Default: 3003
+    Description: Port the container listens on
+
+  MongoDBUri:
+    Type: String
+    NoEcho: true
+    Description: MongoDB Atlas connection string (stored securely, not shown in console)
+
+# ---------------------------------------------------------------------------
+# Resources — the AWS resources to create (the only required section)
+# ---------------------------------------------------------------------------
+Resources:
+
+  # ECR Repository — stores your Docker images
+  ECRRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Ref AppName
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Keep only the last 10 images",
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 10
+                },
+                "action": {
+                  "type": "expire"
+                }
+              }
+            ]
+          }
+
+  # IAM Role — allows App Runner to pull images from ECR
+  AppRunnerAccessRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: build.apprunner.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSAppRunnerServicePolicyForECRAccess
+
+  # App Runner Service — runs your container with auto-scaling and HTTPS
+  AppRunnerService:
+    Type: AWS::AppRunner::Service
+    Properties:
+      ServiceName: !Ref AppName
+      SourceConfiguration:
+        AuthenticationConfiguration:
+          AccessRoleArn: !GetAtt AppRunnerAccessRole.Arn
+        AutoDeploymentsEnabled: true
+        ImageRepository:
+          ImageIdentifier: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${AppName}:latest"
+          ImageRepositoryType: ECR
+          ImageConfiguration:
+            Port: !Ref ContainerPort
+            RuntimeEnvironmentVariables:
+              - Name: MONGODB_URI
+                Value: !Ref MongoDBUri
+              - Name: NODE_ENV
+                Value: production
+      InstanceConfiguration:
+        Cpu: "1024"
+        Memory: "2048"
+
+# ---------------------------------------------------------------------------
+# Outputs — values displayed after the stack is created
+# ---------------------------------------------------------------------------
+Outputs:
+  ServiceUrl:
+    Description: The URL of the deployed App Runner service
+    Value: !Sub "https://${AppRunnerService.ServiceUrl}"
+
+  ECRRepositoryUri:
+    Description: The URI of the ECR repository (use in your deploy workflow)
+    Value: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${AppName}"
+
+# =============================================================================
+# YOUR ANSWERS — Add your answers to Part 6, Step 2 below as YAML comments
+# =============================================================================
+#
+# 1. What does the Resources section define?
+#    YOUR ANSWER:
+#
+# 2. What is the !Sub function doing in the ImageUri property?
+#    YOUR ANSWER:
+#
+# 3. If you deleted this CloudFormation stack, what would happen to your
+#    App Runner service?
+#    YOUR ANSWER:
+#
+# 4. What is one advantage of defining infrastructure in a template file
+#    vs. clicking through the Console?
+#    YOUR ANSWER:
+#
