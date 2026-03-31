@@ -70,7 +70,7 @@ test.describe('Registration', () => {
     await page.fill('#password', 'differentpass');
     await page.getByRole('button', { name: 'Register' }).click();
 
-    // Error message should appear
+    // Error message should appear (not success — duplicate should fail)
     await expect(page.locator('.error-box')).toBeVisible({ timeout: 5000 });
     await expect(page.locator('.error-box')).toContainText('already exists');
   });
@@ -83,10 +83,12 @@ test.describe('Login', () => {
   const loginUser = `e2e_login_${uniqueId()}`;
 
   test.beforeAll(async ({ request }) => {
-    // Register the user via API before tests
-    await request.post('/api/auth/register', {
+    // Register the user via API before tests (no browser page here — API only)
+    const response = await request.post('/api/auth/register', {
       data: { username: loginUser, password: 'loginpass123' },
     });
+    // Verify the API returned success
+    expect(response.status()).toBe(201);
   });
 
   test('successful login redirects to projects page', async ({ page }) => {
