@@ -30,8 +30,8 @@ aws-actions/amazon-ecr-login        →    buildspec.yml pre_build (aws ecr get-
 ## Key differences
 
 ### Credentials
-- **GitHub Actions:** You manually stored AWS credentials as GitHub Secrets. Credentials rotate and must be updated.
-- **AWS-Native:** CodeBuild gets an **IAM Role** automatically. No credentials to manage or rotate. This is more secure.
+- **GitHub Actions:** You created a dedicated IAM user and stored its access keys as GitHub Secrets. These are long-lived credentials that must be rotated manually. A more secure approach is OIDC federation (GitHub assumes an IAM Role directly — no stored secrets).
+- **AWS-Native:** CodeBuild gets an **IAM Role** automatically. No credentials to manage or rotate. This is the most secure approach.
 
 ### Build configuration
 - **GitHub Actions:** Build steps are defined inline in the workflow YAML (mixed with orchestration).

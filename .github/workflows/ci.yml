@@ -1,5 +1,5 @@
 # =============================================================================
-# CI Workflow — Lab 9: CI/CD Deployment
+# CI Workflow — CI/CD Deployment Exercise
 # =============================================================================
 # This workflow runs on every push and pull request to the main branch.
 # It validates code quality (lint) and verifies the Docker image builds.

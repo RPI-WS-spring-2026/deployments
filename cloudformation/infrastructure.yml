@@ -1,5 +1,5 @@
 # =============================================================================
-# CloudFormation Template — Lab 9: CI/CD Deployment
+# CloudFormation Template — CI/CD Deployment Exercise
 # =============================================================================
 # This template defines the same AWS infrastructure you created manually
 # in the Console. It demonstrates Infrastructure as Code (IaC):

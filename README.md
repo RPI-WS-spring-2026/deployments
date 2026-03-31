@@ -1,9 +1,9 @@
-# Lab 9: CI/CD Deployment — From Push to Production
+# In-Class Exercise: CI/CD Deployment — From Push to Production
 
 In the previous labs you built authentication (Lab 6) and testing (Lab 7). Now you'll close the loop by setting up a **CI/CD pipeline** that automatically tests, builds, and deploys the todo app to AWS every time you push code.
 
 **Time:** ~1.5 hours
-**Prerequisites:** Completed Lab 6 (authentication working), Docker Desktop installed, AWS Academy Learner Lab access
+**Prerequisites:** Completed Lab 6 (authentication working), Docker Desktop installed, AWS account access
 **Stack:** Next.js 14 + MongoDB Atlas + GitHub Actions + Amazon ECR + AWS App Runner
 
 ---
@@ -138,8 +138,8 @@ In the lecture you learned about AWS-native CI/CD services. Here's how our GitHu
 2. Clone **your** assignment repository:
 
 ```bash
-git clone https://github.com/RPI-WS-spring-2026/deployment-lab9-yourusername.git
-cd deployment-lab9-yourusername
+git clone https://github.com/RPI-WS-spring-2026/deployment-exercise-yourusername.git
+cd deployment-exercise-yourusername
 ```
 
 ### 2. Set Up MongoDB Atlas (~10 min)
@@ -323,14 +323,34 @@ In the lecture you learned about **Elastic Beanstalk** — a Platform-as-a-Servi
 
 We use App Runner for this lab because it gets you to a deployed app in minutes — like Elastic Beanstalk but with less configuration overhead.
 
-### Step 1 — Start your AWS Academy Learner Lab
+### Step 1 — Log into the AWS Console
 
-1. Log into your AWS Academy course
-2. Start the **Learner Lab**
-3. Click **AWS Console** to open the management console
-4. Note your **AWS Account ID** (top right corner → click your username)
+1. Log into the [AWS Management Console](https://console.aws.amazon.com/)
+2. Make sure you're in the **us-east-1** (N. Virginia) region (top right dropdown)
+3. Note your **AWS Account ID** (top right corner → click your username)
 
-### Step 2 — Create an ECR Repository
+### Step 2 — Create an IAM User for GitHub Actions
+
+GitHub Actions needs AWS credentials to push images to ECR and trigger deployments. You'll create a dedicated **IAM user** with only the permissions it needs — this follows the **principle of least privilege**.
+
+1. In the AWS Console, search for **IAM** and open it
+2. Go to **Users** → **Create user**
+3. **User name:** `github-actions-deployer`
+4. Click **Next**
+5. **Set permissions:** Choose **Attach policies directly**
+6. Search for and attach these managed policies:
+   - `AmazonEC2ContainerRegistryPowerUser` — push/pull Docker images to ECR
+   - `AWSAppRunnerFullAccess` — manage App Runner services
+7. Click **Next** → **Create user**
+8. Click into the newly created user → **Security credentials** tab
+9. Under **Access keys**, click **Create access key**
+10. Select **Third-party service** (since GitHub Actions is external)
+11. Click **Create access key**
+12. **Save both the Access Key ID and Secret Access Key** — the secret is only shown once!
+
+> **Why a dedicated IAM user?** Never use your root account or personal credentials in CI/CD. A dedicated user with scoped permissions limits the blast radius if credentials are compromised. In a production environment you'd go further and use **OIDC federation** (no long-lived credentials at all) — see the Discussion Questions.
+
+### Step 3 — Create an ECR Repository
 
 Amazon Elastic Container Registry (ECR) is a private Docker registry — like Docker Hub, but in your AWS account. In the AWS-native pipeline, CodeBuild would push build **artifacts** to S3. Since we're deploying containers, ECR serves the same purpose: it stores the deployable artifact (the Docker image).
 
@@ -342,7 +362,7 @@ Amazon Elastic Container Registry (ECR) is a private Docker registry — like Do
 4. Click **Create repository**
 5. Note the **URI** — it looks like: `123456789012.dkr.ecr.us-east-1.amazonaws.com/todo-app`
 
-### Step 3 — Create an App Runner Service
+### Step 4 — Create an App Runner Service
 
 1. In the AWS Console, search for **App Runner** and open it
 2. Click **Create service**
@@ -371,16 +391,6 @@ Amazon Elastic Container Registry (ECR) is a private Docker registry — like Do
 
 > **Deployment strategy:** App Runner uses a **rolling deployment** by default — it starts new instances with the new image, waits for health checks to pass, then stops old instances. This means zero downtime during deploys. Compare this to the **all-at-once**, **rolling**, and **blue/green** strategies from the lecture.
 
-### Step 4 — Get AWS credentials for GitHub Actions
-
-You need AWS credentials so GitHub Actions can push images to ECR.
-
-1. In your AWS Academy Learner Lab, click **AWS Details**
-2. Click **Show** next to AWS CLI credentials
-3. Copy the `aws_access_key_id`, `aws_secret_access_key`, and `aws_session_token`
-
-> **Important:** Learner Lab credentials rotate every few hours. For a production setup you'd use IAM roles with OIDC — but for this lab, session credentials work fine.
-
 ### Step 5 — Add GitHub Secrets
 
 GitHub Secrets store sensitive values that your workflows can access without exposing them in code.
@@ -390,11 +400,12 @@ GitHub Secrets store sensitive values that your workflows can access without exp
 
 | Secret Name | Value |
 |---|---|
-| `AWS_ACCESS_KEY_ID` | Your access key |
-| `AWS_SECRET_ACCESS_KEY` | Your secret key |
-| `AWS_SESSION_TOKEN` | Your session token |
-| `AWS_ACCOUNT_ID` | Your 12-digit account ID |
+| `AWS_ACCESS_KEY_ID` | Access key from the IAM user you created in Step 2 |
+| `AWS_SECRET_ACCESS_KEY` | Secret access key from Step 2 |
+| `AWS_ACCOUNT_ID` | Your 12-digit AWS account ID |
 | `MONGODB_URI` | Your Atlas connection string |
+
+> **Security note:** These are long-lived IAM credentials. Treat them like passwords — never commit them to code, share them in chat, or reuse them across projects. In a production environment, you'd replace these with **OIDC federation** so GitHub Actions assumes an IAM Role directly with no stored credentials at all.
 
 ---
 
@@ -454,7 +465,6 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
@@ -628,7 +638,7 @@ Here's the summary comparison:
 | **Trigger** | `git push`, PR, schedule | Git push, webhook, manual |
 | **Build runner** | GitHub-hosted or self-hosted | CodeBuild (managed containers) |
 | **Config format** | YAML in `.github/workflows/` | `buildspec.yml` + Console/CloudFormation |
-| **AWS credentials** | Manual (Secrets or OIDC) | Automatic (IAM Roles) |
+| **AWS credentials** | IAM user keys in GitHub Secrets (or OIDC) | Automatic IAM Roles (no stored credentials) |
 | **Cost** | 2,000 min/mo free, then pay | $1/pipeline/mo + CodeBuild minutes |
 | **Deployment strategies** | Custom (you implement) | Built-in all-at-once, rolling, blue/green |
 | **Best for** | Open source, GitHub-centric teams | AWS-native production apps |
@@ -696,7 +706,7 @@ This mirrors the Dev → Staging → Production environment progression from the
 
 ### Stretch 3: Deploy with CodePipeline
 
-If your Learner Lab has CodePipeline access, try deploying the app using the AWS-native approach:
+Try deploying the app using the AWS-native approach:
 
 1. Create a CodeConnections connection to your GitHub repo
 2. Create a CodeBuild project that uses `aws-native/buildspec.yml`
@@ -713,7 +723,7 @@ Compare the experience: which was easier to set up? Which gives you more visibil
 
 3. **Why do we tag images with both the commit SHA and `latest`?** When would you use the SHA tag to rollback?
 
-4. **What are the security implications of storing AWS credentials as GitHub Secrets?** How does OIDC improve on this? How does AWS Secrets Manager/Parameter Store compare?
+4. **What are the security implications of storing long-lived IAM credentials as GitHub Secrets?** How does OIDC federation eliminate this risk? What is the principle of least privilege and how did we apply it when creating the IAM user?
 
 5. **Compare GitHub Actions to AWS CodePipeline + CodeBuild + CodeDeploy.** When would you choose each?
 
@@ -729,7 +739,7 @@ Commit and push all your changes:
 
 ```bash
 git add -A
-git commit -m "Lab 9: CI/CD deployment pipeline complete"
+git commit -m "CI/CD deployment pipeline complete"
 git push
 ```
 
@@ -757,7 +767,7 @@ When you push your code, an automated grading workflow checks:
 
 ## Troubleshooting
 
-- **AWS credentials expired:** Learner Lab credentials rotate. Get fresh ones from AWS Details and update your GitHub Secrets.
+- **AWS credentials not working:** Verify the IAM user `github-actions-deployer` has the correct policies attached (`AmazonEC2ContainerRegistryPowerUser` and `AWSAppRunnerFullAccess`). Double-check the access key ID and secret in your GitHub Secrets.
 - **ECR push denied:** Verify your `AWS_ACCOUNT_ID` secret is correct (12 digits, no dashes).
 - **App Runner stays "Operation in progress":** First deploys take 3-5 minutes. Check the App Runner logs in the AWS Console for errors.
 - **MongoDB connection errors in production:** Verify your Atlas Network Access allows `0.0.0.0/0` and the `MONGODB_URI` secret has the correct password and database name.

@@ -1,5 +1,5 @@
 # =============================================================================
-# Automated Grading Workflow — Lab 9
+# Automated Grading Workflow — CI/CD Deployment Exercise
 # =============================================================================
 # This workflow checks that students have completed the lab requirements.
 # It runs on every push and validates the CI/CD setup.

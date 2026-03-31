@@ -1,5 +1,5 @@
 # =============================================================================
-# Deploy Workflow — Lab 9: CI/CD Deployment
+# Deploy Workflow — CI/CD Deployment Exercise
 # =============================================================================
 # This workflow runs on pushes to main. It:
 #   1. Tests the code (lint)
@@ -8,9 +8,8 @@
 #   4. Triggers a new deployment on AWS App Runner
 #
 # REQUIRED GITHUB SECRETS (Settings → Secrets → Actions):
-#   - AWS_ACCESS_KEY_ID
-#   - AWS_SECRET_ACCESS_KEY
-#   - AWS_SESSION_TOKEN
+#   - AWS_ACCESS_KEY_ID      (from IAM user 'github-actions-deployer')
+#   - AWS_SECRET_ACCESS_KEY  (from IAM user 'github-actions-deployer')
 #   - AWS_ACCOUNT_ID
 #   - MONGODB_URI
 # =============================================================================
@@ -63,13 +62,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Authenticate with AWS using credentials stored in GitHub Secrets
+      # Authenticate with AWS using IAM user credentials stored in GitHub Secrets
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: ${{ env.AWS_REGION }}
 
       # Get a temporary Docker login token for ECR
