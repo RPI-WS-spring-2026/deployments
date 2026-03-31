@@ -19,7 +19,7 @@ export default function Home() {
     <div style={{ textAlign: 'center', marginTop: '4rem' }}>
       <h1>Welcome to Project Manager</h1>
       <p style={{ marginTop: '1rem', color: '#6b7280' }}>
-        A simple project and task management application.
+        A simple project and task management application with CI.
       </p>
       <p style={{ marginTop: '0.5rem', color: '#6b7280' }}>
         Log in to manage your projects and tasks.
