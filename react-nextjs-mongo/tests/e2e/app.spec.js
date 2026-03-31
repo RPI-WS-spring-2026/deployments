@@ -22,7 +22,7 @@ test.describe('Homepage', () => {
   test('displays welcome message and login link', async ({ page }) => {
     await page.goto('/');
     await expect(page.locator('h1')).toContainText('Project Manager');
-    await expect(page.locator('a[href="/login"]')).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Login / Register' })).toBeVisible();
   });
 
   test('login link navigates to login page', async ({ page }) => {
@@ -170,7 +170,8 @@ test.describe('Unauthenticated access', () => {
     await page.waitForTimeout(2000);
     const url = page.url();
     const hasLoginRedirect = url.includes('/login');
-    const hasErrorOrEmpty = await page.locator('.error-box, text=Login').count() > 0;
+    const hasErrorOrEmpty = (await page.locator('.error-box').count()) > 0
+      || (await page.getByText('Login').count()) > 0;
     expect(hasLoginRedirect || hasErrorOrEmpty).toBe(true);
   });
 });
