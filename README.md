@@ -221,88 +221,116 @@ Press `Ctrl+C` to stop when done.
 
 ---
 
-## Part 1: Create a GitHub Actions CI Workflow (~15 min)
+## Part 1: Explore the Test Suite and CI Workflow (~20 min)
 
-**Goal:** Implement **Continuous Integration** — automatically lint and build on every push.
+**Goal:** Understand the three layers of testing and how they map to the CI pipeline.
 
-### Background: What is GitHub Actions?
+### Background: Testing Pyramid in CI/CD
 
-GitHub Actions is a CI/CD platform built into GitHub. You define **workflows** in YAML files inside `.github/workflows/`. Each workflow consists of **jobs**, and each job consists of **steps**. Workflows are triggered by **events** like `push`, `pull_request`, or `schedule`.
+The app includes tests at three layers, mirroring the **testing pyramid** from Lab 7:
 
-This is analogous to AWS **CodePipeline** + **CodeBuild**: CodePipeline orchestrates the stages, CodeBuild runs the actual commands. In GitHub Actions, the workflow file does both.
+| Layer | Tool | What it tests | Speed | Files |
+|-------|------|---------------|-------|-------|
+| **Unit** | Jest | Auth functions, validation logic — in isolation | Fast (ms) | `tests/unit/*.test.js` |
+| **Integration** | Jest + fetch | API routes + auth + database together via HTTP | Medium (s) | `tests/integration/api.test.js` |
+| **End-to-End** | Playwright | Full app in a real Chromium browser — register, login, create projects | Slow (s) | `tests/e2e/app.spec.js` |
 
-### Step 1 — Create the workflow file
+The CI workflow runs these in order: **unit tests first** (fail fast), then **integration and E2E in parallel** (need a running app), then **Docker build** (only if all tests pass).
 
-Create the file `.github/workflows/ci.yml`:
-
-```yaml
-name: CI
-
-on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-
-jobs:
-  test:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '18'
-
-      - name: Install dependencies
-        run: npm install
-        working-directory: ./react-nextjs-mongo
-
-      - name: Run linter
-        run: npm run lint
-        working-directory: ./react-nextjs-mongo
-
-  build:
-    runs-on: ubuntu-latest
-    needs: test
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Build Docker image
-        run: docker build -t todo-app ./react-nextjs-mongo
 ```
+                        CI Pipeline
+  ┌────────────────┐   ┌──────────────────┐   ┌─────────────┐
+  │ lint + unit    │──▶│ integration      │──▶│ Docker      │
+  │ (fastest)      │   │ + E2E (parallel) │   │ build       │
+  └────────────────┘   └──────────────────┘   └─────────────┘
+     Fail fast            Need running app       Only if all pass
+```
+
+### Step 1 — Run the tests locally
+
+```bash
+# Unit tests (no database needed — runs in milliseconds)
+cd react-nextjs-mongo
+npm install
+npm run test:unit
+```
+
+You should see ~30 unit tests pass across `auth.test.js` and `validation.test.js`.
+
+```bash
+# Integration tests (requires running app + MongoDB)
+# In another terminal, start the app:
+cd ..
+docker compose up --build
+
+# Then run integration tests:
+cd react-nextjs-mongo
+npm run test:integration
+```
+
+You should see ~20 integration tests pass — registration, login, project CRUD, and user isolation.
+
+```bash
+# E2E tests (requires running app + Playwright browser)
+npx playwright install chromium
+npm run test:e2e
+```
+
+You should see ~10 E2E tests pass — homepage rendering, registration flow, login flow, project creation, and unauthenticated access handling.
+
+### Step 2 — Read the test files
+
+Open each test file and understand what's being tested:
+
+**Unit tests** (`tests/unit/auth.test.js`):
+- `signToken()` — returns valid JWT, correct payload, correct expiration
+- `verifyAuth()` — accepts valid tokens, rejects expired/tampered/malformed tokens
+
+**Unit tests** (`tests/unit/validation.test.js`):
+- Project name validation — empty, whitespace, too long
+- Task status validation — valid statuses, invalid statuses
+- Auth input validation — missing fields
+
+**Integration tests** (`tests/integration/api.test.js`):
+- `POST /api/auth/register` — success (201), duplicate (409), missing fields (400)
+- `POST /api/auth/login` — success with token, wrong password (401), missing user (401)
+- `GET/POST /api/projects` — requires auth (401), CRUD operations, empty name (400)
+- **Authorization isolation** — User B cannot see User A's projects
+
+**E2E tests** (`tests/e2e/app.spec.js`):
+- Homepage displays welcome message and login link
+- Registration flow — success and duplicate username error
+- Login flow — success redirects to projects, wrong password shows error
+- Full flow — login → create project → see project in list
+- Unauthenticated access handling
+
+### Step 3 — Review the CI workflow
+
+Open `.github/workflows/ci.yml` and read through it. Notice how:
+
+1. **`lint-and-unit` job** runs first — lint + unit tests need no database, so they're the fastest gate
+2. **`integration` job** starts Docker Compose (app + MongoDB) then runs API tests
+3. **`e2e` job** starts Docker Compose then runs Playwright in a real browser
+4. **`build` job** only runs if ALL test jobs pass — `needs: [lint-and-unit, integration, e2e]`
 
 > **Compare to AWS CodeBuild:** In the AWS-native approach, you'd put these same commands in a `buildspec.yml` file with `install`, `pre_build`, and `build` phases. Open `aws-native/buildspec.yml` to see the side-by-side equivalent — each phase is annotated with the GitHub Actions step it replaces.
 
-### Step 2 — Commit and push
+### Step 4 — Push and watch
 
 ```bash
-git add .github/workflows/ci.yml
-git commit -m "Add CI workflow with lint and Docker build"
+git add -A
+git commit -m "Review test suite and CI pipeline"
 git push
 ```
 
-### Step 3 — Watch it run
+Go to the **Actions** tab and watch the CI workflow:
+- [ ] `lint-and-unit` job passes (lint + unit tests)
+- [ ] `integration` job passes (API tests against running app)
+- [ ] `e2e` job passes (Playwright browser tests)
+- [ ] `build` job passes (Docker image builds)
+- [ ] All 4 jobs show green checkmarks
 
-1. Go to your repository on GitHub
-2. Click the **Actions** tab
-3. You should see your "CI" workflow running
-4. Click into it to watch the steps execute in real time
-
-> **Key concept:** This is **Continuous Integration** — every push is automatically validated. The `needs: test` line means the `build` job only runs if `test` passes. If linting fails, the Docker image is never built. This is the same gating principle that CodePipeline uses: **failed stages block downstream stages**.
-
-### Test it:
-
-Verify in the Actions tab that:
-- [ ] The workflow triggered on your push
-- [ ] The `test` job ran the linter
-- [ ] The `build` job built the Docker image
-- [ ] Both jobs show green checkmarks
+> **Key concept:** This is **Continuous Integration** — every push is automatically validated at all three testing layers. A failing unit test blocks integration tests. A failing integration test blocks the Docker build. Broken code never gets built into an image. This is the same gating principle that CodePipeline uses: **failed stages block downstream stages**.
 
 ---
 

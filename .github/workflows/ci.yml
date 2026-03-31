@@ -2,11 +2,14 @@
 # CI Workflow — CI/CD Deployment Exercise
 # =============================================================================
 # This workflow runs on every push and pull request to the main branch.
-# It validates code quality (lint) and verifies the Docker image builds.
+# It validates code at three levels:
+#   1. Lint — catch code quality issues
+#   2. Unit tests — verify individual functions in isolation (fast)
+#   3. Integration + E2E tests — verify API routes and UI (requires running app)
+#   4. Docker build — verify the image builds successfully
 #
-# YOUR TASK: This file is provided as a reference. Read through it to
-# understand each step, then use it as a starting point. You may need to
-# modify it if your project structure differs.
+# This mirrors the testing pyramid: unit tests run first (fast, fail fast),
+# then integration/E2E tests (slower, higher confidence), then build.
 # =============================================================================
 
 name: CI
@@ -19,10 +22,10 @@ on:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Job 1: Test
-  # Runs the linter to catch code quality issues early
+  # Job 1: Lint + Unit Tests (fastest — fail fast)
+  # These need no database or running server.
   # ---------------------------------------------------------------------------
-  test:
+  lint-and-unit:
     runs-on: ubuntu-latest
 
     steps:
@@ -42,14 +45,126 @@ jobs:
         run: npm run lint
         working-directory: ./react-nextjs-mongo
 
+      - name: Run unit tests
+        run: npm run test:unit
+        working-directory: ./react-nextjs-mongo
+
   # ---------------------------------------------------------------------------
-  # Job 2: Build
-  # Builds the Docker image to verify the Dockerfile is correct.
-  # Only runs if the test job passes (needs: test).
+  # Job 2: Integration Tests (requires running app + MongoDB)
+  # Uses Docker Compose to start the app and MongoDB, then runs API tests.
+  # ---------------------------------------------------------------------------
+  integration:
+    runs-on: ubuntu-latest
+    needs: lint-and-unit
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Create .env for tests
+        run: echo "MONGODB_URI=mongodb://mongo:27017/todoapp-test" > .env
+
+      - name: Start app with Docker Compose
+        run: |
+          cat > docker-compose.test.yml << 'EOF'
+          services:
+            app:
+              build: ./react-nextjs-mongo
+              ports:
+                - "3003:3003"
+              environment:
+                - MONGODB_URI=mongodb://mongo:27017/todoapp-test
+                - NODE_ENV=development
+              depends_on:
+                - mongo
+            mongo:
+              image: mongo:7
+              ports:
+                - "27017:27017"
+          EOF
+          docker compose -f docker-compose.test.yml up --build -d
+          sleep 15  # wait for Next.js to compile and MongoDB to start
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      - name: Install test dependencies
+        run: npm install
+        working-directory: ./react-nextjs-mongo
+
+      - name: Run integration tests
+        run: npm run test:integration
+        working-directory: ./react-nextjs-mongo
+        env:
+          TEST_BASE_URL: http://localhost:3003
+
+      - name: Stop containers
+        if: always()
+        run: docker compose -f docker-compose.test.yml down -v
+
+  # ---------------------------------------------------------------------------
+  # Job 3: E2E Tests (requires running app + browser)
+  # Runs Playwright tests in a real Chromium browser.
+  # ---------------------------------------------------------------------------
+  e2e:
+    runs-on: ubuntu-latest
+    needs: lint-and-unit
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Start app with Docker Compose
+        run: |
+          cat > docker-compose.test.yml << 'EOF'
+          services:
+            app:
+              build: ./react-nextjs-mongo
+              ports:
+                - "3003:3003"
+              environment:
+                - MONGODB_URI=mongodb://mongo:27017/todoapp-e2e
+                - NODE_ENV=development
+              depends_on:
+                - mongo
+            mongo:
+              image: mongo:7
+          EOF
+          docker compose -f docker-compose.test.yml up --build -d
+          sleep 15
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      - name: Install dependencies
+        run: npm install
+        working-directory: ./react-nextjs-mongo
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+        working-directory: ./react-nextjs-mongo
+
+      - name: Run E2E tests
+        run: npm run test:e2e
+        working-directory: ./react-nextjs-mongo
+        env:
+          TEST_BASE_URL: http://localhost:3003
+
+      - name: Stop containers
+        if: always()
+        run: docker compose -f docker-compose.test.yml down -v
+
+  # ---------------------------------------------------------------------------
+  # Job 4: Docker Build (verify Dockerfile is correct)
+  # Only runs if all tests pass.
   # ---------------------------------------------------------------------------
   build:
     runs-on: ubuntu-latest
-    needs: test
+    needs: [lint-and-unit, integration, e2e]
 
     steps:
       - name: Checkout code
