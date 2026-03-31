@@ -1,5 +1,5 @@
 # =============================================================================
-# Automated Grading Workflow — Lab 8
+# Automated Grading Workflow — Lab 9
 # =============================================================================
 # This workflow checks that students have completed the lab requirements.
 # It runs on every push and validates the CI/CD setup.
@@ -118,6 +118,22 @@ jobs:
             exit 1
           fi
 
+      - name: "Check 10b: .env.example exists and .env is gitignored"
+        run: |
+          if [ -f ".env.example" ]; then
+            echo "✓ .env.example exists"
+          else
+            echo "✗ Missing .env.example"
+            exit 1
+          fi
+
+          if grep -q "^\.env$" .gitignore 2>/dev/null; then
+            echo "✓ .env is in .gitignore"
+          else
+            echo "✗ .env is not in .gitignore — secrets could be committed!"
+            exit 1
+          fi
+
       - name: "Check 11: Dockerfile builds successfully"
         run: |
           docker build -t todo-app:grading ./react-nextjs-mongo
@@ -134,7 +150,7 @@ jobs:
               exit 1
             fi
           else
-            echo "✗ Missing COMPARISON.md (Part 6b and Part 7)"
+            echo "✗ Missing COMPARISON.md (Part 5b and Part 6)"
             exit 1
           fi
 

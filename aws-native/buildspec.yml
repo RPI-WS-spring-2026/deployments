@@ -1,0 +1,91 @@
+# =============================================================================
+# AWS CodeBuild — buildspec.yml
+# =============================================================================
+# This is the AWS-native equivalent of the GitHub Actions CI + build steps.
+# CodeBuild reads this file from your repository root and executes each phase
+# in a managed container (similar to a GitHub Actions runner).
+#
+# Phases map to your GitHub Actions workflow like this:
+#
+#   buildspec.yml phase    →   GitHub Actions equivalent
+#   ──────────────────────────────────────────────────────
+#   install                →   "Install dependencies" step
+#   pre_build              →   "Run linter" step + ECR login
+#   build                  →   "Build Docker image" step
+#   post_build             →   "Push to ECR" step
+#
+# This file would live in your project root. CodePipeline triggers CodeBuild,
+# which spins up a container, clones your repo, and runs these phases.
+# =============================================================================
+
+version: 0.2
+
+env:
+  # Pull secrets from AWS Systems Manager Parameter Store
+  # (equivalent to GitHub Secrets, but AWS-native)
+  parameter-store:
+    MONGODB_URI: /todo-app/mongodb-uri
+    JWT_SECRET: /todo-app/jwt-secret
+
+phases:
+  # ---------------------------------------------------------------------------
+  # Install phase — set up the build environment
+  # GitHub Actions equivalent: "Set up Node.js" + "Install dependencies" steps
+  # ---------------------------------------------------------------------------
+  install:
+    runtime-versions:
+      nodejs: 18
+    commands:
+      - echo "Installing dependencies..."
+      - cd react-nextjs-mongo
+      - npm install
+
+  # ---------------------------------------------------------------------------
+  # Pre-build phase — validate code quality before building
+  # GitHub Actions equivalent: "Run linter" step + "Login to ECR" step
+  #
+  # If lint fails here, the build stops — same gating behavior as
+  # `needs: test` in the GitHub Actions deploy workflow.
+  # ---------------------------------------------------------------------------
+  pre_build:
+    commands:
+      - echo "Running linter..."
+      - npm run lint
+
+      - echo "Logging in to Amazon ECR..."
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION
+          | docker login --username AWS --password-stdin
+            $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+
+  # ---------------------------------------------------------------------------
+  # Build phase — create the Docker image
+  # GitHub Actions equivalent: "Build, tag, and push Docker image" step
+  # ---------------------------------------------------------------------------
+  build:
+    commands:
+      - echo "Building Docker image..."
+      - IMAGE_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/todo-app
+      - docker build -t $IMAGE_URI:$CODEBUILD_RESOLVED_SOURCE_VERSION .
+      - docker tag $IMAGE_URI:$CODEBUILD_RESOLVED_SOURCE_VERSION $IMAGE_URI:latest
+
+  # ---------------------------------------------------------------------------
+  # Post-build phase — push the image and prepare deployment artifacts
+  # GitHub Actions equivalent: docker push + App Runner deployment step
+  # ---------------------------------------------------------------------------
+  post_build:
+    commands:
+      - echo "Pushing Docker image to ECR..."
+      - docker push $IMAGE_URI:$CODEBUILD_RESOLVED_SOURCE_VERSION
+      - docker push $IMAGE_URI:latest
+      - echo "Image pushed successfully"
+
+      # Write an image definitions file for CodeDeploy / ECS
+      # (CodeDeploy reads this to know which image to deploy)
+      - printf '[{"name":"todo-app","imageUri":"%s"}]' $IMAGE_URI:latest
+          > imagedefinitions.json
+
+# Artifacts — files passed to the next CodePipeline stage (CodeDeploy)
+# GitHub Actions doesn't need this because the deploy step runs in the same job.
+artifacts:
+  files:
+    - imagedefinitions.json

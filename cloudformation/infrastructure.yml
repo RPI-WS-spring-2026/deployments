@@ -1,5 +1,5 @@
 # =============================================================================
-# CloudFormation Template — Lab 8: CI/CD Deployment
+# CloudFormation Template — Lab 9: CI/CD Deployment
 # =============================================================================
 # This template defines the same AWS infrastructure you created manually
 # in the Console. It demonstrates Infrastructure as Code (IaC):
@@ -116,7 +116,7 @@ Outputs:
     Value: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${AppName}"
 
 # =============================================================================
-# YOUR ANSWERS — Add your answers to Part 6, Step 2 below as YAML comments
+# YOUR ANSWERS — Add your answers to Part 5, Step 2 below as YAML comments
 # =============================================================================
 #
 # 1. What does the Resources section define?

@@ -1,0 +1,256 @@
+# =============================================================================
+# AWS CodePipeline — CloudFormation Template
+# =============================================================================
+# This template creates a full AWS-native CI/CD pipeline equivalent to
+# the GitHub Actions deploy.yml workflow. It wires together:
+#
+#   CodeConnections (Source) → CodeBuild (Build+Test) → App Runner (Deploy)
+#
+# Compare to deploy.yml:
+#   deploy.yml trigger: on: push: branches: [main]
+#   CodePipeline trigger: GitHub webhook via CodeConnections
+#
+#   deploy.yml test job → CodeBuild pre_build phase (lint)
+#   deploy.yml deploy job → CodeBuild build/post_build + CodeDeploy
+#
+# This is a REFERENCE FILE — you do not need to deploy it.
+# =============================================================================
+
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  AWS-native CI/CD pipeline for the Todo App.
+  Demonstrates CodePipeline + CodeBuild as an alternative to GitHub Actions.
+
+Parameters:
+  GitHubOwner:
+    Type: String
+    Description: GitHub username or organization
+
+  GitHubRepo:
+    Type: String
+    Default: deployment-lab9
+    Description: GitHub repository name
+
+  GitHubBranch:
+    Type: String
+    Default: main
+
+  ConnectionArn:
+    Type: String
+    Description: >
+      ARN of the CodeConnections connection to GitHub.
+      Created in the Console under Developer Tools → Connections.
+
+Resources:
+  # ---------------------------------------------------------------------------
+  # S3 Bucket — stores pipeline artifacts between stages
+  # GitHub Actions equivalent: artifacts are passed between steps in the same
+  # job, or via actions/upload-artifact for cross-job sharing.
+  # ---------------------------------------------------------------------------
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  # ---------------------------------------------------------------------------
+  # IAM Role for CodeBuild — permissions to access ECR, S3, CloudWatch
+  # GitHub Actions equivalent: AWS credentials stored as GitHub Secrets
+  # (or OIDC role for production setups)
+  # ---------------------------------------------------------------------------
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser
+      Policies:
+        - PolicyName: CodeBuildAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource: "*"
+
+  # ---------------------------------------------------------------------------
+  # CodeBuild Project — runs buildspec.yml
+  # GitHub Actions equivalent: the `runs-on: ubuntu-latest` runner that
+  # executes your workflow steps
+  # ---------------------------------------------------------------------------
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: todo-app-build
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Source:
+        Type: CODEPIPELINE
+        # CodeBuild looks for buildspec.yml in the repo root
+        BuildSpec: aws-native/buildspec.yml
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
+        PrivilegedMode: true  # Required for docker build
+        EnvironmentVariables:
+          - Name: AWS_ACCOUNT_ID
+            Value: !Ref "AWS::AccountId"
+          - Name: AWS_DEFAULT_REGION
+            Value: !Ref "AWS::Region"
+      Artifacts:
+        Type: CODEPIPELINE
+
+  # ---------------------------------------------------------------------------
+  # IAM Role for CodePipeline
+  # ---------------------------------------------------------------------------
+  PipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: PipelineAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+                  - codestar-connections:UseConnection
+                  - apprunner:StartDeployment
+                  - apprunner:ListServices
+                Resource: "*"
+
+  # ---------------------------------------------------------------------------
+  # CodePipeline — orchestrates Source → Build → Deploy
+  # GitHub Actions equivalent: the entire deploy.yml workflow file
+  #
+  # Notice how each stage here maps to a job in deploy.yml:
+  #   Source stage  → `on: push` trigger + `actions/checkout`
+  #   Build stage   → `test` job + `deploy` job (build + push steps)
+  #   Deploy stage  → `Deploy to App Runner` step
+  # ---------------------------------------------------------------------------
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: todo-app-pipeline
+      RoleArn: !GetAtt PipelineRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucket
+
+      Stages:
+        # Stage 1: Source — triggered by GitHub push
+        # deploy.yml equivalent: on: push: branches: [main]
+        - Name: Source
+          Actions:
+            - Name: GitHubSource
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeStarSourceConnection
+                Version: "1"
+              Configuration:
+                ConnectionArn: !Ref ConnectionArn
+                FullRepositoryId: !Sub "${GitHubOwner}/${GitHubRepo}"
+                BranchName: !Ref GitHubBranch
+              OutputArtifacts:
+                - Name: SourceCode
+
+        # Stage 2: Build — runs buildspec.yml (lint, build, push to ECR)
+        # deploy.yml equivalent: test job + deploy job build steps
+        - Name: Build
+          Actions:
+            - Name: BuildAndPush
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !Ref CodeBuildProject
+              InputArtifacts:
+                - Name: SourceCode
+              OutputArtifacts:
+                - Name: BuildOutput
+
+        # Stage 3: Manual approval gate (optional)
+        # This makes it Continuous DELIVERY (not Deployment).
+        # Remove this stage to make it fully automatic like deploy.yml.
+        # deploy.yml equivalent: (none — deploy.yml has no manual gate)
+        #
+        # - Name: Approval
+        #   Actions:
+        #     - Name: ManualApproval
+        #       ActionTypeId:
+        #         Category: Approval
+        #         Owner: AWS
+        #         Provider: Manual
+        #         Version: "1"
+
+        # Stage 4: Deploy — trigger App Runner to pull new image
+        # deploy.yml equivalent: "Deploy to App Runner" step
+        - Name: Deploy
+          Actions:
+            - Name: DeployToAppRunner
+              ActionTypeId:
+                Category: Invoke
+                Owner: AWS
+                Provider: Lambda
+                Version: "1"
+              Configuration:
+                FunctionName: !Ref DeployFunction
+              InputArtifacts:
+                - Name: BuildOutput
+
+  # ---------------------------------------------------------------------------
+  # Lambda function to trigger App Runner deployment
+  # (CodePipeline doesn't have a native App Runner action,
+  # so we use a small Lambda function as glue)
+  # ---------------------------------------------------------------------------
+  DeployFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: todo-app-deploy-trigger
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt PipelineRole.Arn
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+
+          def handler(event, context):
+              client = boto3.client('apprunner')
+              services = client.list_services()
+              for svc in services['ServiceSummaryList']:
+                  if svc['ServiceName'] == 'todo-app':
+                      client.start_deployment(ServiceArn=svc['ServiceArn'])
+                      return {'statusCode': 200, 'body': 'Deployment triggered'}
+              raise Exception('App Runner service not found')
+
+Outputs:
+  PipelineUrl:
+    Description: URL to view the pipeline in the AWS Console
+    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/codesuite/codepipeline/pipelines/todo-app-pipeline/view"

@@ -1,5 +1,5 @@
 # =============================================================================
-# Deploy Workflow — Lab 8: CI/CD Deployment
+# Deploy Workflow — Lab 9: CI/CD Deployment
 # =============================================================================
 # This workflow runs on pushes to main. It:
 #   1. Tests the code (lint)
@@ -104,7 +104,7 @@ jobs:
 
           if [ -z "$SERVICE_ARN" ] || [ "$SERVICE_ARN" = "None" ]; then
             echo "ERROR: App Runner service '${{ env.APP_RUNNER_SERVICE }}' not found."
-            echo "Make sure you created the service in the AWS Console (Part 3)."
+            echo "Make sure you created the service in the AWS Console (Part 2)."
             exit 1
           fi
 

@@ -1,4 +1,4 @@
-# Lab 8: CI/CD Deployment — From Push to Production
+# Lab 9: CI/CD Deployment — From Push to Production
 
 In the previous labs you built authentication (Lab 6) and testing (Lab 7). Now you'll close the loop by setting up a **CI/CD pipeline** that automatically tests, builds, and deploys the todo app to AWS every time you push code.
 
@@ -91,7 +91,7 @@ Professional teams deploy through a series of environments:
 
 **Infrastructure as Code** ensures each environment is identical — eliminating "works on my machine."
 
-In this lab, your `docker compose` setup is **development** and App Runner is **production**. The stretch goals add a staging environment.
+In this lab, your local `docker compose` setup is **development** and App Runner is **production**. Both use the same MongoDB Atlas database (in a real project you'd have separate databases per environment). The stretch goals add a staging environment.
 
 ---
 
@@ -126,7 +126,7 @@ In the lecture you learned about AWS-native CI/CD services. Here's how our GitHu
 | App Runner `start-deployment` | **CodeDeploy** | Deploy to compute |
 | CloudFormation template | **CloudFormation** | Infrastructure as Code |
 
-> **Why GitHub Actions instead of CodePipeline?** You already use GitHub daily. GitHub Actions is the industry standard for GitHub-hosted projects, has a lower learning curve, and 2,000 free minutes/month. Understanding both prepares you for industry — see the comparison table in Part 6.
+> **Why GitHub Actions instead of CodePipeline?** You already use GitHub daily. GitHub Actions is the industry standard for GitHub-hosted projects, has a lower learning curve, and 2,000 free minutes/month. Understanding both prepares you for industry — see the comparison table in Part 5.
 
 ---
 
@@ -138,11 +138,65 @@ In the lecture you learned about AWS-native CI/CD services. Here's how our GitHu
 2. Clone **your** assignment repository:
 
 ```bash
-git clone https://github.com/RPI-WS-spring-2026/deployment-lab8-yourusername.git
-cd deployment-lab8-yourusername
+git clone https://github.com/RPI-WS-spring-2026/deployment-lab9-yourusername.git
+cd deployment-lab9-yourusername
 ```
 
-### 2. Verify the app runs locally
+### 2. Set Up MongoDB Atlas (~10 min)
+
+Unlike previous labs where MongoDB ran in a local Docker container, this lab uses **MongoDB Atlas** — a free cloud-hosted database. This is the same database for both local development and production deployment, which means your local app behaves identically to the deployed version. No more "works on my machine" database issues.
+
+> **Why cloud-hosted for local dev too?** When your local dev and production environments use the same database service (even if different instances), you eliminate an entire class of bugs where queries work on local MongoDB but fail on Atlas due to version differences, connection string formats, or driver behavior. This is the "environments must match" principle from the lecture.
+
+#### Step 1 — Create a MongoDB Atlas account
+
+1. Go to [mongodb.com/atlas](https://www.mongodb.com/atlas) and sign up (free)
+2. Create a new **Shared Cluster** (the free M0 tier)
+3. Choose **AWS** as the cloud provider and pick **us-east-1** as the region
+
+#### Step 2 — Configure access
+
+1. Go to **Database Access** → **Add New Database User**
+   - Username: `todoapp`
+   - Password: generate a secure password and **save it**
+   - Role: "Read and Write to Any Database"
+
+2. Go to **Network Access** → **Add IP Address**
+   - Click **Allow Access from Anywhere** (0.0.0.0/0)
+   - This is required for both your local machine and AWS App Runner to connect
+
+#### Step 3 — Get your connection string
+
+1. Go to **Database** → **Connect** → **Connect your application**
+2. Copy the connection string. It looks like:
+   ```
+   mongodb+srv://todoapp:<password>@cluster0.xxxxx.mongodb.net/?retryWrites=true&w=majority
+   ```
+3. Replace `<password>` with your actual password
+4. Add a database name before the `?`:
+   ```
+   mongodb+srv://todoapp:yourpassword@cluster0.xxxxx.mongodb.net/todoapp?retryWrites=true&w=majority
+   ```
+
+> **Important:** Never commit connection strings or passwords to your repository. In a production AWS setup, you'd use **AWS Secrets Manager** or **Parameter Store** — CodeBuild can inject them as environment variables during the build phase.
+
+#### Step 4 — Create your `.env` file
+
+The repository includes a `.env.example` template. Copy it and fill in your Atlas connection string:
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` and replace the placeholder with your actual connection string:
+
+```
+MONGODB_URI=mongodb+srv://todoapp:yourpassword@cluster0.xxxxx.mongodb.net/todoapp?retryWrites=true&w=majority
+```
+
+The `.env` file is listed in `.gitignore` so it will **never be committed** to your repository. Docker Compose reads it automatically via the `env_file` directive.
+
+### 3. Verify the app runs locally
 
 Make sure Docker Desktop is running, then:
 
@@ -150,13 +204,19 @@ Make sure Docker Desktop is running, then:
 docker compose up --build
 ```
 
-This starts:
-- **app** — the Next.js todo app on [http://localhost:3003](http://localhost:3003)
-- **mongo** — MongoDB on port 27017
+This starts the Next.js todo app on [http://localhost:3003](http://localhost:3003), connected to your MongoDB Atlas cluster.
 
-Open [http://localhost:3003](http://localhost:3003) and verify you can register, login, create projects, and add tasks. Press `Ctrl+C` to stop when done.
+Open [http://localhost:3003](http://localhost:3003) and verify you can:
+- Register a new user
+- Login
+- Create a project
+- Add tasks to it
 
-> **Note:** The app in this repo already has Lab 6 authentication completed. You're building on top of a working application.
+Press `Ctrl+C` to stop when done.
+
+> **Note:** The app already has Lab 6 authentication completed. You're building on top of a working application.
+
+> **Troubleshooting:** If you see a MongoDB connection error, double-check your `.env` file — make sure there are no extra spaces, the password is correct, and you included the database name (`/todoapp?`) in the URI.
 
 ---
 
@@ -216,7 +276,7 @@ jobs:
         run: docker build -t todo-app ./react-nextjs-mongo
 ```
 
-> **Compare to AWS CodeBuild:** In the AWS-native approach, you'd put the `npm install`, `npm run lint`, and `docker build` commands in a `buildspec.yml` file with `install`, `pre_build`, and `build` phases. GitHub Actions uses step-level YAML instead.
+> **Compare to AWS CodeBuild:** In the AWS-native approach, you'd put these same commands in a `buildspec.yml` file with `install`, `pre_build`, and `build` phases. Open `aws-native/buildspec.yml` to see the side-by-side equivalent — each phase is annotated with the GitHub Actions step it replaces.
 
 ### Step 2 — Commit and push
 
@@ -245,61 +305,7 @@ Verify in the Actions tab that:
 
 ---
 
-## Part 2: Set Up MongoDB Atlas (~10 min)
-
-**Goal:** Create a cloud database for your deployed app.
-
-Your local app uses a MongoDB container (the **development** environment). Your deployed app needs a database accessible from AWS (the **production** environment). MongoDB Atlas provides a free cloud-hosted MongoDB instance.
-
-### Step 1 — Create a MongoDB Atlas account
-
-1. Go to [mongodb.com/atlas](https://www.mongodb.com/atlas) and sign up (free)
-2. Create a new **Shared Cluster** (the free M0 tier)
-3. Choose **AWS** as the cloud provider and pick **us-east-1** as the region
-
-### Step 2 — Configure access
-
-1. Go to **Database Access** → **Add New Database User**
-   - Username: `todoapp`
-   - Password: generate a secure password and **save it**
-   - Role: "Read and Write to Any Database"
-
-2. Go to **Network Access** → **Add IP Address**
-   - Click **Allow Access from Anywhere** (0.0.0.0/0)
-   - This is required for AWS App Runner to connect
-
-### Step 3 — Get your connection string
-
-1. Go to **Database** → **Connect** → **Connect your application**
-2. Copy the connection string. It looks like:
-   ```
-   mongodb+srv://todoapp:<password>@cluster0.xxxxx.mongodb.net/?retryWrites=true&w=majority
-   ```
-3. Replace `<password>` with your actual password
-4. Add a database name before the `?`:
-   ```
-   mongodb+srv://todoapp:yourpassword@cluster0.xxxxx.mongodb.net/todoapp?retryWrites=true&w=majority
-   ```
-
-> **Important:** Never commit this connection string to your repository. You'll store it as a GitHub Secret and an AWS environment variable. In a production AWS setup, you'd use **AWS Secrets Manager** or **Parameter Store** to manage secrets — CodeBuild can inject them as environment variables during the build phase.
-
-### Step 4 — Update the app to use an environment variable
-
-Open `react-nextjs-mongo/src/lib/db.js` and check that it reads from an environment variable. If it has a hardcoded `mongodb://mongo:27017/...` URI, update it:
-
-```js
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://mongo:27017/todoapp';
-```
-
-This way the app uses the local MongoDB in **development** and the Atlas URI in **production** — same code, different configuration per environment.
-
-### Test it:
-
-Run the app locally and verify it still works with Docker Compose (it should fall back to the local `mongo` container).
-
----
-
-## Part 3: Set Up AWS Infrastructure (~15 min)
+## Part 2: Set Up AWS Infrastructure (~15 min)
 
 **Goal:** Create an ECR repository and an App Runner service.
 
@@ -355,13 +361,13 @@ Amazon Elastic Container Registry (ECR) is a private Docker registry — like Do
    - Port: `3003`
    - Add environment variable:
      - Key: `MONGODB_URI`
-     - Value: your MongoDB Atlas connection string from Part 2
+     - Value: your MongoDB Atlas connection string (from Getting Started)
    - Add environment variable:
      - Key: `NODE_ENV`
      - Value: `production`
 7. Click **Next** → **Create & deploy**
 
-> **Note:** The first deployment will fail because there's no image in ECR yet — that's expected! The service will automatically deploy once we push an image in Part 4.
+> **Note:** The first deployment will fail because there's no image in ECR yet — that's expected! The service will automatically deploy once we push an image in Part 3.
 
 > **Deployment strategy:** App Runner uses a **rolling deployment** by default — it starts new instances with the new image, waits for health checks to pass, then stops old instances. This means zero downtime during deploys. Compare this to the **all-at-once**, **rolling**, and **blue/green** strategies from the lecture.
 
@@ -392,7 +398,7 @@ GitHub Secrets store sensitive values that your workflows can access without exp
 
 ---
 
-## Part 4: Add the Deploy Workflow (~20 min)
+## Part 3: Add the Deploy Workflow (~20 min)
 
 **Goal:** Implement **Continuous Deployment** — push to `main` triggers test → build → push → deploy automatically.
 
@@ -483,7 +489,7 @@ jobs:
 | **Deploy** | `apprunner start-deployment` | CodeDeploy targeting ECS/Beanstalk |
 | **Orchestration** | `needs: test` (job dependency) | CodePipeline stage ordering |
 
-> **Key insight:** The `needs: test` dependency creates the same gating behavior as CodePipeline: **failed stages block downstream stages**. A failing lint check stops the entire deploy, just as a failed CodeBuild phase halts the CodePipeline.
+> **Key insight:** The `needs: test` dependency creates the same gating behavior as CodePipeline: **failed stages block downstream stages**. A failing lint check stops the entire deploy, just as a failed CodeBuild phase halts the CodePipeline. Open `aws-native/pipeline.yml` to see a full CodePipeline CloudFormation template that does the same thing — every stage is annotated with its `deploy.yml` equivalent.
 
 ### Step 2 — Commit and push
 
@@ -510,7 +516,7 @@ git push
 
 ---
 
-## Part 5: See CI/CD in Action (~10 min)
+## Part 4: See CI/CD in Action (~10 min)
 
 **Goal:** Experience the full **Continuous Deployment** cycle: push code → tests run → app deploys.
 
@@ -554,13 +560,13 @@ git push
 
 ---
 
-## Part 6: Infrastructure as Code & AWS Comparison (~15 min)
+## Part 5: Infrastructure as Code & AWS Comparison (~15 min)
 
 **Goal:** Understand Infrastructure as Code and how GitHub Actions compares to AWS-native CI/CD.
 
 ### 6a. Infrastructure as Code with CloudFormation
 
-In Parts 3-4 you created AWS resources (ECR, App Runner) by clicking through the Console. This is like manually configuring a server — it works once but isn't reproducible, version-controlled, or reviewable.
+In Parts 2-3 you created AWS resources (ECR, App Runner) by clicking through the Console. This is like manually configuring a server — it works once but isn't reproducible, version-controlled, or reviewable.
 
 **CloudFormation** solves this by letting you define your infrastructure in a template file:
 
@@ -584,7 +590,7 @@ Notice how the template uses:
 - **`!Sub`** — string substitution that inserts your account ID and region
 - **`!Ref`** and **`!GetAtt`** — references between resources
 
-> **Compare to AWS SAM:** For serverless apps (Lambda + API Gateway + DynamoDB), **AWS SAM** provides simplified syntax. One SAM resource definition can expand to 50+ lines of CloudFormation. SAM is to CloudFormation what React is to vanilla DOM manipulation.
+> **Compare to AWS SAM:** For serverless apps (Lambda + API Gateway + DynamoDB), **AWS SAM** provides simplified syntax. One SAM resource definition can expand to 50+ lines of CloudFormation. SAM is to CloudFormation what React is to vanilla DOM manipulation. You can see a small example of a Lambda function in `aws-native/pipeline.yml` — the `DeployFunction` resource — and imagine how much simpler it would be with SAM's `AWS::Serverless::Function` type.
 
 ### Step 2 — Answer these questions
 
@@ -597,29 +603,46 @@ Add your answers as YAML comments at the bottom of `cloudformation/infrastructur
 
 ### 6b. GitHub Actions vs AWS CodePipeline
 
-You built your pipeline with GitHub Actions. Here's how it compares to the AWS-native approach from the lecture:
+You built your pipeline with GitHub Actions. The `aws-native/` directory contains the **AWS-native equivalent** — the same pipeline built with CodePipeline + CodeBuild. Read these files side by side:
+
+| Your file (GitHub Actions) | AWS-native equivalent | What to compare |
+|---|---|---|
+| `.github/workflows/deploy.yml` | `aws-native/pipeline.yml` | Orchestration: jobs/stages, triggers, gating |
+| Steps inside `ci.yml` + `deploy.yml` | `aws-native/buildspec.yml` | Build commands: install, lint, docker build, push |
+| GitHub Secrets (manual setup) | IAM Roles in `pipeline.yml` | Credential management approach |
+
+### Step 3 — Read the AWS-native files
+
+Open `aws-native/buildspec.yml` and `aws-native/pipeline.yml`. Each section is annotated with comments showing the GitHub Actions equivalent. Also read `aws-native/README.md` for a full comparison.
+
+Key differences to notice:
+- **Credentials:** GitHub Actions needs secrets you manually copy. CodeBuild gets an IAM Role automatically — more secure, no rotation needed.
+- **Separation of concerns:** GitHub Actions mixes orchestration and build commands in one file. AWS separates them: CodePipeline orchestrates, `buildspec.yml` defines build steps.
+- **Manual approval:** CodePipeline has a built-in Manual Approval action (uncommented in `pipeline.yml`). This is how you switch between Continuous Deployment and Continuous Delivery.
+- **Deployment strategies:** CodeDeploy provides built-in all-at-once, rolling, and blue/green with automatic rollback. With GitHub Actions you implement this yourself.
+
+Here's the summary comparison:
 
 | Feature | GitHub Actions | AWS CodePipeline |
 |---------|---------------|-----------------|
 | **Trigger** | `git push`, PR, schedule | Git push, webhook, manual |
 | **Build runner** | GitHub-hosted or self-hosted | CodeBuild (managed containers) |
-| **Config format** | YAML in `.github/workflows/` | Console, YAML, or CDK |
-| **Config file for builds** | Steps in workflow YAML | `buildspec.yml` (separate file) |
-| **AWS integration** | Requires IAM credentials/OIDC setup | Native — no extra config |
-| **Cost** | 2,000 min/mo free, then pay | Pay per pipeline execution |
+| **Config format** | YAML in `.github/workflows/` | `buildspec.yml` + Console/CloudFormation |
+| **AWS credentials** | Manual (Secrets or OIDC) | Automatic (IAM Roles) |
+| **Cost** | 2,000 min/mo free, then pay | $1/pipeline/mo + CodeBuild minutes |
 | **Deployment strategies** | Custom (you implement) | Built-in all-at-once, rolling, blue/green |
 | **Best for** | Open source, GitHub-centric teams | AWS-native production apps |
 | **Learning curve** | Easier, more community tutorials | Steeper but more enterprise features |
 
-### Step 3 — Answer this question
+### Step 4 — Answer this question
 
 Add a file `COMPARISON.md` to the root of your repository answering:
 
-**If you were deploying a production application for a company that uses AWS exclusively, would you choose GitHub Actions or AWS CodePipeline? Give at least two reasons.**
+**If you were deploying a production application for a company that uses AWS exclusively, would you choose GitHub Actions or AWS CodePipeline? Give at least two reasons. Reference specific differences you observed in the `aws-native/` files.**
 
 ---
 
-## Part 7: Deployment Strategies (~5 min, reading + questions)
+## Part 6: Deployment Strategies (~5 min, reading + questions)
 
 **Goal:** Understand how production deployments handle the transition from old code to new code.
 
@@ -653,7 +676,7 @@ Add to your `COMPARISON.md`:
 
 ---
 
-## Part 8: Stretch Goals (Optional)
+## Part 7: Stretch Goals (Optional)
 
 ### Stretch 1: Add a staging environment
 
@@ -671,23 +694,16 @@ This mirrors the Dev → Staging → Production environment progression from the
 
 > This is how production systems verify a deploy succeeded — **CloudWatch** would monitor this endpoint and trigger alarms if it starts failing.
 
-### Stretch 3: Create a buildspec.yml
+### Stretch 3: Deploy with CodePipeline
 
-As an exercise, create a `buildspec.yml` file that would do the same thing as your GitHub Actions workflow but for AWS CodeBuild:
+If your Learner Lab has CodePipeline access, try deploying the app using the AWS-native approach:
 
-```yaml
-version: 0.2
-phases:
-  install:
-    commands:
-      - # What goes here?
-  pre_build:
-    commands:
-      - # What goes here?
-  build:
-    commands:
-      - # What goes here?
-```
+1. Create a CodeConnections connection to your GitHub repo
+2. Create a CodeBuild project that uses `aws-native/buildspec.yml`
+3. Create a CodePipeline with Source → Build stages
+4. Push a change and watch both pipelines (GitHub Actions AND CodePipeline) run simultaneously
+
+Compare the experience: which was easier to set up? Which gives you more visibility into what's happening?
 
 ### Discussion Questions
 
@@ -713,7 +729,7 @@ Commit and push all your changes:
 
 ```bash
 git add -A
-git commit -m "Lab 8: CI/CD deployment pipeline complete"
+git commit -m "Lab 9: CI/CD deployment pipeline complete"
 git push
 ```
 
