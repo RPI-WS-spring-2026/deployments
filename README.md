@@ -326,7 +326,7 @@ We use App Runner for this lab because it gets you to a deployed app in minutes 
 ### Step 1 — Log into the AWS Console
 
 1. Log into the [AWS Management Console](https://console.aws.amazon.com/)
-2. Make sure you're in the **us-east-1** (N. Virginia) region (top right dropdown)
+2. Pick a region (e.g. **us-east-1** or **us-east-2**) and note it — you'll use the same region for all AWS resources and in your `AWS_REGION` GitHub Secret
 3. Note your **AWS Account ID** (top right corner → click your username)
 
 ### Step 2 — Create an IAM User for GitHub Actions
@@ -360,7 +360,7 @@ Amazon Elastic Container Registry (ECR) is a private Docker registry — like Do
    - **Visibility:** Private
    - **Repository name:** `todo-app`
 4. Click **Create repository**
-5. Note the **URI** — it looks like: `123456789012.dkr.ecr.us-east-1.amazonaws.com/todo-app`
+5. Note the **URI** — it looks like: `123456789012.dkr.ecr.us-east-2.amazonaws.com/todo-app`
 
 ### Step 4 — Create an App Runner Service
 
@@ -370,7 +370,7 @@ Amazon Elastic Container Registry (ECR) is a private Docker registry — like Do
    - Source type: **Container registry**
    - Provider: **Amazon ECR**
    - Container image URI: use the ECR URI from Step 2, with tag `:latest`
-     - Example: `123456789012.dkr.ecr.us-east-1.amazonaws.com/todo-app:latest`
+     - Example: `123456789012.dkr.ecr.us-east-2.amazonaws.com/todo-app:latest`
    - ECR access role: **Create new service role** (let AWS create it)
 4. **Deployment settings:**
    - Deployment trigger: **Automatic**
@@ -398,14 +398,19 @@ GitHub Secrets store sensitive values that your workflows can access without exp
 1. Go to your GitHub repository → **Settings** → **Secrets and variables** → **Actions**
 2. Click **New repository secret** for each:
 
-| Secret Name | Value |
-|---|---|
-| `AWS_ACCESS_KEY_ID` | Access key from the IAM user you created in Step 2 |
-| `AWS_SECRET_ACCESS_KEY` | Secret access key from Step 2 |
-| `AWS_ACCOUNT_ID` | Your 12-digit AWS account ID |
-| `MONGODB_URI` | Your Atlas connection string |
+| Secret Name | Value | Example |
+|---|---|---|
+| `AWS_ACCESS_KEY_ID` | Access key from the IAM user you created in Step 2 | `AKIA...` |
+| `AWS_SECRET_ACCESS_KEY` | Secret access key from Step 2 | |
+| `AWS_ACCOUNT_ID` | Your 12-digit AWS account ID | `199865934287` |
+| `AWS_REGION` | The AWS region where you created your ECR repo | `us-east-2` |
+| `ECR_REPOSITORY` | Name of your ECR repository | `todo-app` |
+| `APP_RUNNER_SERVICE` | Name of your App Runner service | `todo-app` |
+| `MONGODB_URI` | Your Atlas connection string | `mongodb+srv://...` |
 
-> **Security note:** These are long-lived IAM credentials. Treat them like passwords — never commit them to code, share them in chat, or reuse them across projects. In a production environment, you'd replace these with **OIDC federation** so GitHub Actions assumes an IAM Role directly with no stored credentials at all.
+> **Why secrets instead of hardcoded values?** Region, repo names, and account IDs vary per student and per environment. Storing them as secrets keeps the workflow portable — the same `deploy.yml` works for everyone without editing the file. In a team setting, you'd have separate secret sets for dev, staging, and production.
+
+> **Security note:** The AWS credentials are long-lived IAM keys. Treat them like passwords — never commit them to code, share them in chat, or reuse them across projects. In a production environment, you'd replace these with **OIDC federation** so GitHub Actions assumes an IAM Role directly with no stored credentials at all.
 
 ---
 
@@ -415,79 +420,16 @@ GitHub Secrets store sensitive values that your workflows can access without exp
 
 This is the equivalent of a full **CodePipeline** with Source → Build → Deploy stages, but defined as a GitHub Actions workflow.
 
-### Step 1 — Create the deploy workflow
+### Step 1 — Review the deploy workflow
 
-Create the file `.github/workflows/deploy.yml`:
+The deploy workflow is already provided at `.github/workflows/deploy.yml`. Open it and read through the comments — every step is annotated.
 
-```yaml
-name: Deploy
+Key things to notice:
+- **No hardcoded values** — region, repo name, and service name all come from `secrets.*`
+- The `test` job gates the `deploy` job via `needs: test`
+- Images are tagged with both the commit SHA (for rollback) and `latest` (for App Runner)
 
-on:
-  push:
-    branches: [main]
-
-env:
-  AWS_REGION: us-east-1
-  ECR_REPOSITORY: todo-app
-  APP_RUNNER_SERVICE: todo-app
-
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '18'
-
-      - name: Install dependencies
-        run: npm install
-        working-directory: ./react-nextjs-mongo
-
-      - name: Run linter
-        run: npm run lint
-        working-directory: ./react-nextjs-mongo
-
-  deploy:
-    runs-on: ubuntu-latest
-    needs: test
-    if: github.ref == 'refs/heads/main'
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Build, tag, and push Docker image to ECR
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ github.sha }}
-        run: |
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG ./react-nextjs-mongo
-          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
-
-      - name: Deploy to App Runner
-        run: |
-          aws apprunner start-deployment \
-            --service-arn $(aws apprunner list-services \
-              --query "ServiceSummaryList[?ServiceName=='${{ env.APP_RUNNER_SERVICE }}'].ServiceArn" \
-              --output text)
-```
+> **If you want to customize it**, the workflow is fully yours to modify. But it should work as-is once your GitHub Secrets are configured correctly.
 
 ### Understanding the workflow — mapping to AWS services
 

@@ -10,8 +10,11 @@
 # REQUIRED GITHUB SECRETS (Settings → Secrets → Actions):
 #   - AWS_ACCESS_KEY_ID      (from IAM user 'github-actions-deployer')
 #   - AWS_SECRET_ACCESS_KEY  (from IAM user 'github-actions-deployer')
-#   - AWS_ACCOUNT_ID
-#   - MONGODB_URI
+#   - AWS_ACCOUNT_ID         (your 12-digit AWS account ID)
+#   - AWS_REGION             (e.g. us-east-1, us-east-2)
+#   - ECR_REPOSITORY         (e.g. todo-app)
+#   - APP_RUNNER_SERVICE     (e.g. todo-app)
+#   - MONGODB_URI            (MongoDB Atlas connection string)
 # =============================================================================
 
 name: Deploy
@@ -19,11 +22,6 @@ name: Deploy
 on:
   push:
     branches: [main]
-
-env:
-  AWS_REGION: us-east-1
-  ECR_REPOSITORY: todo-app
-  APP_RUNNER_SERVICE: todo-app
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -68,7 +66,7 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: ${{ secrets.AWS_REGION }}
 
       # Get a temporary Docker login token for ECR
       - name: Login to Amazon ECR
@@ -81,6 +79,7 @@ jobs:
       - name: Build, tag, and push Docker image to ECR
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
           echo "Building Docker image..."
@@ -95,13 +94,15 @@ jobs:
 
       # Tell App Runner to pull the latest image and redeploy
       - name: Deploy to App Runner
+        env:
+          APP_RUNNER_SERVICE: ${{ secrets.APP_RUNNER_SERVICE }}
         run: |
           SERVICE_ARN=$(aws apprunner list-services \
-            --query "ServiceSummaryList[?ServiceName=='${{ env.APP_RUNNER_SERVICE }}'].ServiceArn" \
+            --query "ServiceSummaryList[?ServiceName=='${APP_RUNNER_SERVICE}'].ServiceArn" \
             --output text)
 
           if [ -z "$SERVICE_ARN" ] || [ "$SERVICE_ARN" = "None" ]; then
-            echo "ERROR: App Runner service '${{ env.APP_RUNNER_SERVICE }}' not found."
+            echo "ERROR: App Runner service '${APP_RUNNER_SERVICE}' not found."
             echo "Make sure you created the service in the AWS Console (Part 2)."
             exit 1
           fi
