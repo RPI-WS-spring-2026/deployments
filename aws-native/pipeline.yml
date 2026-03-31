@@ -4,7 +4,7 @@
 # This template creates a full AWS-native CI/CD pipeline equivalent to
 # the GitHub Actions deploy.yml workflow. It wires together:
 #
-#   CodeConnections (Source) → CodeBuild (Build+Test) → App Runner (Deploy)
+#   CodeConnections (Source) → CodeBuild (Build+Test) → ECS (Deploy)
 #
 # Compare to deploy.yml:
 #   deploy.yml trigger: on: push: branches: [main]
@@ -138,8 +138,8 @@ Resources:
                   - codebuild:StartBuild
                   - codebuild:BatchGetBuilds
                   - codestar-connections:UseConnection
-                  - apprunner:StartDeployment
-                  - apprunner:ListServices
+                  - ecs:UpdateService
+                  - ecs:DescribeServices
                 Resource: "*"
 
   # ---------------------------------------------------------------------------
@@ -149,7 +149,7 @@ Resources:
   # Notice how each stage here maps to a job in deploy.yml:
   #   Source stage  → `on: push` trigger + `actions/checkout`
   #   Build stage   → `test` job + `deploy` job (build + push steps)
-  #   Deploy stage  → `Deploy to App Runner` step
+  #   Deploy stage  → `Deploy to ECS` step
   # ---------------------------------------------------------------------------
   Pipeline:
     Type: AWS::CodePipeline::Pipeline
@@ -209,46 +209,23 @@ Resources:
         #         Provider: Manual
         #         Version: "1"
 
-        # Stage 4: Deploy — trigger App Runner to pull new image
-        # deploy.yml equivalent: "Deploy to App Runner" step
+        # Stage 4: Deploy — update ECS service to pull new image
+        # deploy.yml equivalent: "Deploy to ECS" step
+        # CodePipeline has a native ECS deploy action — no Lambda glue needed
         - Name: Deploy
           Actions:
-            - Name: DeployToAppRunner
+            - Name: DeployToECS
               ActionTypeId:
-                Category: Invoke
+                Category: Deploy
                 Owner: AWS
-                Provider: Lambda
+                Provider: ECS
                 Version: "1"
               Configuration:
-                FunctionName: !Ref DeployFunction
+                ClusterName: todo-app
+                ServiceName: todo-app
+                FileName: imagedefinitions.json
               InputArtifacts:
                 - Name: BuildOutput
-
-  # ---------------------------------------------------------------------------
-  # Lambda function to trigger App Runner deployment
-  # (CodePipeline doesn't have a native App Runner action,
-  # so we use a small Lambda function as glue)
-  # ---------------------------------------------------------------------------
-  DeployFunction:
-    Type: AWS::Lambda::Function
-    Properties:
-      FunctionName: todo-app-deploy-trigger
-      Runtime: python3.12
-      Handler: index.handler
-      Role: !GetAtt PipelineRole.Arn
-      Code:
-        ZipFile: |
-          import boto3
-          import json
-
-          def handler(event, context):
-              client = boto3.client('apprunner')
-              services = client.list_services()
-              for svc in services['ServiceSummaryList']:
-                  if svc['ServiceName'] == 'todo-app':
-                      client.start_deployment(ServiceArn=svc['ServiceArn'])
-                      return {'statusCode': 200, 'body': 'Deployment triggered'}
-              raise Exception('App Runner service not found')
 
 Outputs:
   PipelineUrl:

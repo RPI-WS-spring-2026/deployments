@@ -1,20 +1,30 @@
 # =============================================================================
 # CloudFormation Template — CI/CD Deployment Exercise
 # =============================================================================
-# This template defines the same AWS infrastructure you created manually
-# in the Console. It demonstrates Infrastructure as Code (IaC):
-# resources defined in a version-controlled file that can be created,
-# updated, and deleted as a single unit (a "stack").
+# This template creates the AWS infrastructure for running the Todo App:
+#   - ECS Cluster (Fargate — serverless containers)
+#   - ECS Task Definition (what container to run, CPU/memory, env vars)
+#   - ECS Service (keeps the task running, handles deploys)
+#   - Application Load Balancer (routes traffic to the container)
+#   - Security Groups (firewall rules)
+#   - IAM Roles (permissions for ECS to pull from ECR and write logs)
 #
-# NOTE: This template is for learning purposes. You do NOT need to deploy
-# it — you already created these resources through the Console. Read it
-# to understand how CloudFormation works.
+# DEPLOY THIS TEMPLATE:
+#   aws cloudformation deploy \
+#     --template-file cloudformation/infrastructure.yml \
+#     --stack-name todo-app \
+#     --parameter-overrides \
+#         ImageUri=YOUR_ACCOUNT_ID.dkr.ecr.YOUR_REGION.amazonaws.com/todo-app:latest \
+#         MongoDBUri=YOUR_ATLAS_URI \
+#         VpcId=YOUR_VPC_ID \
+#         SubnetIds=subnet-xxx,subnet-yyy \
+#     --capabilities CAPABILITY_IAM
 # =============================================================================
 
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  Infrastructure for the Todo App CI/CD lab.
-  Creates an ECR repository and an App Runner service.
+  ECS Fargate infrastructure for the Todo App CI/CD exercise.
+  Creates a cluster, service, load balancer, and supporting resources.
 
 # ---------------------------------------------------------------------------
 # Parameters — values provided at deploy time (like function arguments)
@@ -23,7 +33,13 @@ Parameters:
   AppName:
     Type: String
     Default: todo-app
-    Description: Name used for the ECR repo and App Runner service
+    Description: Name used for the ECS cluster, service, and related resources
+
+  ImageUri:
+    Type: String
+    Description: >
+      Full ECR image URI including tag
+      (e.g. 199865934287.dkr.ecr.us-east-2.amazonaws.com/todo-app:latest)
 
   ContainerPort:
     Type: Number
@@ -35,39 +51,43 @@ Parameters:
     NoEcho: true
     Description: MongoDB Atlas connection string (stored securely, not shown in console)
 
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC to deploy into (use your default VPC)
+
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: At least 2 public subnets in different AZs (for the load balancer)
+
+  Cpu:
+    Type: String
+    Default: "256"
+    AllowedValues: ["256", "512", "1024"]
+    Description: Fargate task CPU units (256 = 0.25 vCPU)
+
+  Memory:
+    Type: String
+    Default: "512"
+    AllowedValues: ["512", "1024", "2048"]
+    Description: Fargate task memory in MB
+
 # ---------------------------------------------------------------------------
 # Resources — the AWS resources to create (the only required section)
 # ---------------------------------------------------------------------------
 Resources:
 
-  # ECR Repository — stores your Docker images
-  ECRRepository:
-    Type: AWS::ECR::Repository
+  # ---- ECS Cluster ----
+  # A logical grouping of tasks/services. With Fargate, there are no EC2
+  # instances to manage — AWS runs your containers on shared infrastructure.
+  ECSCluster:
+    Type: AWS::ECS::Cluster
     Properties:
-      RepositoryName: !Ref AppName
-      ImageScanningConfiguration:
-        ScanOnPush: true
-      LifecyclePolicy:
-        LifecyclePolicyText: |
-          {
-            "rules": [
-              {
-                "rulePriority": 1,
-                "description": "Keep only the last 10 images",
-                "selection": {
-                  "tagStatus": "any",
-                  "countType": "imageCountMoreThan",
-                  "countNumber": 10
-                },
-                "action": {
-                  "type": "expire"
-                }
-              }
-            ]
-          }
+      ClusterName: !Ref AppName
 
-  # IAM Role — allows App Runner to pull images from ECR
-  AppRunnerAccessRole:
+  # ---- IAM Role: Task Execution ----
+  # Allows ECS to pull images from ECR and write logs to CloudWatch.
+  # This is NOT your app's permissions — it's ECS infrastructure permissions.
+  TaskExecutionRole:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
@@ -75,61 +95,171 @@ Resources:
         Statement:
           - Effect: Allow
             Principal:
-              Service: build.apprunner.amazonaws.com
+              Service: ecs-tasks.amazonaws.com
             Action: sts:AssumeRole
       ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSAppRunnerServicePolicyForECRAccess
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
 
-  # App Runner Service — runs your container with auto-scaling and HTTPS
-  AppRunnerService:
-    Type: AWS::AppRunner::Service
+  # ---- CloudWatch Log Group ----
+  # Where your container's stdout/stderr goes (like `docker compose logs`)
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /ecs/${AppName}
+      RetentionInDays: 7
+
+  # ---- ECS Task Definition ----
+  # Defines WHAT to run: which image, how much CPU/memory, env vars, logging.
+  # Think of it as a docker-compose.yml for ECS.
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Ref AppName
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: !Ref Cpu
+      Memory: !Ref Memory
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      ContainerDefinitions:
+        - Name: !Ref AppName
+          Image: !Ref ImageUri
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort
+          Environment:
+            - Name: MONGODB_URI
+              Value: !Ref MongoDBUri
+            - Name: NODE_ENV
+              Value: production
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref "AWS::Region"
+              awslogs-stream-prefix: ecs
+
+  # ---- Security Group: Load Balancer ----
+  # Allows inbound HTTP (port 80) from anywhere
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTP traffic to the load balancer
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  # ---- Security Group: ECS Tasks ----
+  # Only allows traffic from the load balancer (not directly from the internet)
+  TaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow traffic from ALB to ECS tasks
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref ContainerPort
+          ToPort: !Ref ContainerPort
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+
+  # ---- Application Load Balancer ----
+  # Distributes traffic across running containers. Provides a stable URL.
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub ${AppName}-alb
+      Subnets: !Ref SubnetIds
+      SecurityGroups: [!Ref ALBSecurityGroup]
+
+  # ---- Target Group ----
+  # The ALB routes traffic here; ECS registers running tasks as targets
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      TargetType: ip
+      Protocol: HTTP
+      Port: !Ref ContainerPort
+      VpcId: !Ref VpcId
+      HealthCheckPath: /
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+
+  # ---- ALB Listener ----
+  # Listens on port 80 and forwards to the target group
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  # ---- ECS Service ----
+  # Keeps your container running. When you deploy a new image, ECS performs
+  # a rolling update: starts new tasks, waits for health checks, stops old tasks.
+  ECSService:
+    Type: AWS::ECS::Service
+    DependsOn: Listener
     Properties:
       ServiceName: !Ref AppName
-      SourceConfiguration:
-        AuthenticationConfiguration:
-          AccessRoleArn: !GetAtt AppRunnerAccessRole.Arn
-        AutoDeploymentsEnabled: true
-        ImageRepository:
-          ImageIdentifier: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${AppName}:latest"
-          ImageRepositoryType: ECR
-          ImageConfiguration:
-            Port: !Ref ContainerPort
-            RuntimeEnvironmentVariables:
-              - Name: MONGODB_URI
-                Value: !Ref MongoDBUri
-              - Name: NODE_ENV
-                Value: production
-      InstanceConfiguration:
-        Cpu: "1024"
-        Memory: "2048"
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets: !Ref SubnetIds
+          SecurityGroups: [!Ref TaskSecurityGroup]
+      LoadBalancers:
+        - ContainerName: !Ref AppName
+          ContainerPort: !Ref ContainerPort
+          TargetGroupArn: !Ref TargetGroup
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
 
 # ---------------------------------------------------------------------------
 # Outputs — values displayed after the stack is created
 # ---------------------------------------------------------------------------
 Outputs:
   ServiceUrl:
-    Description: The URL of the deployed App Runner service
-    Value: !Sub "https://${AppRunnerService.ServiceUrl}"
+    Description: The URL of your deployed app (load balancer DNS)
+    Value: !Sub "http://${LoadBalancer.DNSName}"
+
+  ClusterName:
+    Description: ECS cluster name (use as ECS_CLUSTER GitHub Secret)
+    Value: !Ref ECSCluster
+
+  ServiceName:
+    Description: ECS service name (use as ECS_SERVICE GitHub Secret)
+    Value: !GetAtt ECSService.Name
 
   ECRRepositoryUri:
-    Description: The URI of the ECR repository (use in your deploy workflow)
+    Description: Use this pattern for your ECR image URI
     Value: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${AppName}"
 
 # =============================================================================
 # YOUR ANSWERS — Add your answers to Part 5, Step 2 below as YAML comments
 # =============================================================================
 #
-# 1. What does the Resources section define?
+# 1. What does the Resources section define? Count how many resources this
+#    template creates — what does each one do?
 #    YOUR ANSWER:
 #
-# 2. What is the !Sub function doing in the ImageUri property?
+# 2. What is the !Sub function doing in the ImageUri and ServiceUrl outputs?
 #    YOUR ANSWER:
 #
 # 3. If you deleted this CloudFormation stack, what would happen to your
-#    App Runner service?
+#    ECS service, load balancer, and all the other resources?
 #    YOUR ANSWER:
 #
 # 4. What is one advantage of defining infrastructure in a template file
-#    vs. clicking through the Console?
+#    vs. clicking through the Console? What would happen if you needed
+#    to create identical staging and production environments?
 #    YOUR ANSWER:
 #

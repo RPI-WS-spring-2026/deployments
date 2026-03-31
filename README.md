@@ -4,7 +4,7 @@ In the previous labs you built authentication (Lab 6) and testing (Lab 7). Now y
 
 **Time:** ~1.5 hours
 **Prerequisites:** Completed Lab 6 (authentication working), Docker Desktop installed, AWS account access
-**Stack:** Next.js 14 + MongoDB Atlas + GitHub Actions + Amazon ECR + AWS App Runner
+**Stack:** Next.js 14 + MongoDB Atlas + GitHub Actions + Amazon ECR + Amazon ECS Fargate
 
 ---
 
@@ -15,7 +15,7 @@ In the previous labs you built authentication (Lab 6) and testing (Lab 7). Now y
 - How to create a **GitHub Actions** CI workflow that runs tests on every push
 - How the **testing pyramid** from Lab 7 maps to CI/CD pipeline stages
 - How to build and push **Docker images** to Amazon Elastic Container Registry (ECR)
-- How to deploy a containerized app to **AWS App Runner** (managed container hosting)
+- How to deploy a containerized app to **Amazon ECS Fargate** (serverless containers)
 - AWS deployment strategies: **all-at-once**, **rolling**, and **blue/green**
 - How **Infrastructure as Code** works using AWS CloudFormation
 - How **GitHub Actions compares to AWS CodePipeline** and the AWS DevOps toolchain
@@ -71,7 +71,7 @@ In Lab 7 you learned the testing pyramid. Here's how it maps to the CI/CD pipeli
   ├──────────────┤                   Run Linter ──▶ Fast, fail first
   │ Integration  │  Some, moderate   Build Docker Image ──▶ Produce artifact
   ├──────────────┤                   Push to ECR ──▶ Store artifact
-  │  Unit Tests  │  Many, fast       Deploy to App Runner ──▶ Ship to production
+  │  Unit Tests  │  Many, fast       Deploy to ECS ──▶ Ship to production
   └──────────────┘
 ```
 
@@ -91,7 +91,7 @@ Professional teams deploy through a series of environments:
 
 **Infrastructure as Code** ensures each environment is identical — eliminating "works on my machine."
 
-In this lab, your local `docker compose` setup is **development** and App Runner is **production**. Both use the same MongoDB Atlas database (in a real project you'd have separate databases per environment). The stretch goals add a staging environment.
+In this lab, your local `docker compose` setup is **development** and ECS Fargate is **production**. Both use the same MongoDB Atlas database (in a real project you'd have separate databases per environment). The stretch goals add a staging environment.
 
 ---
 
@@ -99,15 +99,16 @@ In this lab, your local `docker compose` setup is **development** and App Runner
 
 ```
 ┌─────────┐     ┌──────────────┐     ┌──────────┐     ┌─────────────┐
-│  GitHub  │────▶│GitHub Actions│────▶│Amazon ECR│────▶│ AWS App     │
-│   Push   │     │  (CI/CD)     │     │ (Images) │     │ Runner      │
-└─────────┘     └──────────────┘     └──────────┘     └─────────────┘
-                  │ 1. Lint                              │
-                  │ 2. Build Docker                      │ Runs your
-                  │ 3. Push to ECR                       │ container
-                  │ 4. Trigger deploy                    │
-                                                         │
-                                                    ┌────▼────────┐
+│  GitHub  │────▶│GitHub Actions│────▶│Amazon ECR│────▶│ Amazon ECS  │
+│   Push   │     │  (CI/CD)     │     │ (Images) │     │ (Fargate)   │
+└─────────┘     └──────────────┘     └──────────┘     └──────┬──────┘
+                  │ 1. Lint                                   │
+                  │ 2. Build Docker              ┌────────────▼──┐
+                  │ 3. Push to ECR               │ Load Balancer │
+                  │ 4. Trigger deploy            │  (ALB)        │
+                                                 └────────────┬──┘
+                                                              │
+                                                    ┌─────────▼───┐
                                                     │MongoDB Atlas│
                                                     │ (Database)  │
                                                     └─────────────┘
@@ -123,7 +124,7 @@ In the lecture you learned about AWS-native CI/CD services. Here's how our GitHu
 | GitHub Actions workflow | **CodePipeline** | Orchestration |
 | `npm run lint` / `npm test` steps | **CodeBuild** (with `buildspec.yml`) | Build & test |
 | `docker push` to ECR | CodeBuild artifact → S3 | Store build output |
-| App Runner `start-deployment` | **CodeDeploy** | Deploy to compute |
+| ECS `update-service --force-new-deployment` | **CodeDeploy** | Deploy to compute |
 | CloudFormation template | **CloudFormation** | Infrastructure as Code |
 
 > **Why GitHub Actions instead of CodePipeline?** You already use GitHub daily. GitHub Actions is the industry standard for GitHub-hosted projects, has a lower learning curve, and 2,000 free minutes/month. Understanding both prepares you for industry — see the comparison table in Part 5.
@@ -163,7 +164,7 @@ Unlike previous labs where MongoDB ran in a local Docker container, this lab use
 
 2. Go to **Network Access** → **Add IP Address**
    - Click **Allow Access from Anywhere** (0.0.0.0/0)
-   - This is required for both your local machine and AWS App Runner to connect
+   - This is required for both your local machine and AWS ECS to connect
 
 #### Step 3 — Get your connection string
 
@@ -307,21 +308,20 @@ Verify in the Actions tab that:
 
 ## Part 2: Set Up AWS Infrastructure (~15 min)
 
-**Goal:** Create an ECR repository and an App Runner service.
+**Goal:** Create an ECR repository, push a seed image, and deploy ECS infrastructure using CloudFormation.
 
-### Background: AWS App Runner vs Elastic Beanstalk
+### Background: AWS Container Services
 
-In the lecture you learned about **Elastic Beanstalk** — a Platform-as-a-Service that auto-provisions EC2 instances, load balancers, and auto-scaling. **App Runner** is similar but even simpler: it's purpose-built for containers and requires zero infrastructure configuration.
+AWS offers several ways to run containers:
 
-| Feature | Elastic Beanstalk | App Runner |
-|---------|-------------------|------------|
-| Input | Source code or Docker image | Docker image (or source code) |
-| Manages | EC2, ALB, ASG, security groups | Fully abstracted (no EC2 at all) |
-| Scaling | Configurable auto-scaling rules | Automatic, no configuration |
-| Cost | EC2 instance pricing (pay for uptime) | Pay per request/vCPU-second |
-| Best for | Full control over infrastructure | Simplicity, container-first apps |
+| Service | What it manages | Best for |
+|---------|----------------|----------|
+| **ECS Fargate** | You define tasks; AWS manages servers | Production containers without managing EC2 |
+| **ECS on EC2** | You manage the EC2 instances | Full control over compute |
+| **Elastic Beanstalk** | Everything (EC2, ALB, ASG) | Quick deploys from source code |
+| **EKS (Kubernetes)** | Kubernetes control plane | Teams already using Kubernetes |
 
-We use App Runner for this lab because it gets you to a deployed app in minutes — like Elastic Beanstalk but with less configuration overhead.
+We use **ECS Fargate** — you define what container to run (image, CPU, memory, env vars) and AWS handles the underlying compute. Combined with a **CloudFormation template**, the entire infrastructure is created with a single command.
 
 ### Step 1 — Log into the AWS Console
 
@@ -340,7 +340,7 @@ GitHub Actions needs AWS credentials to push images to ECR and trigger deploymen
 5. **Set permissions:** Choose **Attach policies directly**
 6. Search for and attach these managed policies:
    - `AmazonEC2ContainerRegistryPowerUser` — push/pull Docker images to ECR
-   - `AWSAppRunnerFullAccess` — manage App Runner services
+   - `AmazonECS_FullAccess` — manage ECS services and trigger deployments
 7. Click **Next** → **Create user**
 8. Click into the newly created user → **Security credentials** tab
 9. Under **Access keys**, click **Create access key**
@@ -362,36 +362,89 @@ Amazon Elastic Container Registry (ECR) is a private Docker registry — like Do
 4. Click **Create repository**
 5. Note the **URI** — it looks like: `123456789012.dkr.ecr.us-east-2.amazonaws.com/todo-app`
 
-### Step 4 — Create an App Runner Service
+### Step 4 — Push a seed image to ECR
 
-1. In the AWS Console, search for **App Runner** and open it
-2. Click **Create service**
-3. **Source:**
-   - Source type: **Container registry**
-   - Provider: **Amazon ECR**
-   - Container image URI: use the ECR URI from Step 2, with tag `:latest`
-     - Example: `123456789012.dkr.ecr.us-east-2.amazonaws.com/todo-app:latest`
-   - ECR access role: **Create new service role** (let AWS create it)
-4. **Deployment settings:**
-   - Deployment trigger: **Automatic**
-   - ECR type: **Private**
-5. Click **Next**
-6. **Service settings:**
-   - Service name: `todo-app`
-   - Port: `3003`
-   - Add environment variable:
-     - Key: `MONGODB_URI`
-     - Value: your MongoDB Atlas connection string (from Getting Started)
-   - Add environment variable:
-     - Key: `NODE_ENV`
-     - Value: `production`
-7. Click **Next** → **Create & deploy**
+The ECS infrastructure (next step) needs an image in ECR before it can start. You'll push your first image manually from your local machine. After this, the GitHub Actions workflow handles all future pushes automatically.
 
-> **Note:** The first deployment will fail because there's no image in ECR yet — that's expected! The service will automatically deploy once we push an image in Part 3.
+First, make sure the **AWS CLI** is installed and configured with your IAM user credentials:
 
-> **Deployment strategy:** App Runner uses a **rolling deployment** by default — it starts new instances with the new image, waits for health checks to pass, then stops old instances. This means zero downtime during deploys. Compare this to the **all-at-once**, **rolling**, and **blue/green** strategies from the lecture.
+```bash
+aws configure
+```
 
-### Step 5 — Add GitHub Secrets
+Enter:
+- **Access Key ID:** from Step 2
+- **Secret Access Key:** from Step 2
+- **Default region:** your region (e.g. `us-east-2`)
+- **Output format:** `json`
+
+Now build and push the image (replace the account ID and region with your own):
+
+```bash
+# Log Docker into ECR
+aws ecr get-login-password --region us-east-2 \
+  | docker login --username AWS --password-stdin \
+    199865934287.dkr.ecr.us-east-2.amazonaws.com
+
+# Build the image
+docker build -t todo-app ./react-nextjs-mongo
+
+# Tag it for ECR
+docker tag todo-app:latest \
+  199865934287.dkr.ecr.us-east-2.amazonaws.com/todo-app:latest
+
+# Push it
+docker push 199865934287.dkr.ecr.us-east-2.amazonaws.com/todo-app:latest
+```
+
+> **Replace `199865934287` and `us-east-2`** with your own account ID and region. You can find the full URI on the ECR repository page in the console.
+
+Verify the image appears in the AWS Console under **ECR** → **Repositories** → **todo-app** → **Images**.
+
+### Step 5 — Deploy the ECS infrastructure with CloudFormation
+
+Instead of clicking through the console to create a cluster, load balancer, security groups, and service, you'll deploy everything with a single CloudFormation command. This is **Infrastructure as Code** in action.
+
+First, get your default VPC and subnet IDs:
+
+```bash
+# Get your default VPC ID
+aws ec2 describe-vpcs --filters "Name=isDefault,Values=true" \
+  --query "Vpcs[0].VpcId" --output text
+
+# Get subnet IDs (you need at least 2 in different AZs)
+aws ec2 describe-subnets --filters "Name=vpc-id,Values=YOUR_VPC_ID" \
+  --query "Subnets[*].[SubnetId,AvailabilityZone]" --output table
+```
+
+Now deploy the stack (replace the placeholder values):
+
+```bash
+aws cloudformation deploy \
+  --template-file cloudformation/infrastructure.yml \
+  --stack-name todo-app \
+  --parameter-overrides \
+      ImageUri=199865934287.dkr.ecr.us-east-2.amazonaws.com/todo-app:latest \
+      MongoDBUri="YOUR_ATLAS_CONNECTION_STRING" \
+      VpcId=vpc-xxxxxxxx \
+      SubnetIds=subnet-aaaaaaaa,subnet-bbbbbbbb \
+  --capabilities CAPABILITY_IAM
+```
+
+> **What just happened?** CloudFormation read the template and created 9 resources: an ECS cluster, task definition, service, load balancer, target group, listener, two security groups, a log group, and an IAM role. All from a single command. Try creating that by clicking through the console!
+
+Wait for the stack to complete (3-5 minutes), then get your app's URL:
+
+```bash
+aws cloudformation describe-stacks --stack-name todo-app \
+  --query "Stacks[0].Outputs" --output table
+```
+
+Open the **ServiceUrl** in your browser — your app should be live!
+
+> **Deployment strategy:** ECS performs a **rolling deployment** by default — it starts new tasks with the new image, waits for health checks to pass via the load balancer, then stops old tasks. This means zero downtime during deploys. Compare this to the **all-at-once**, **rolling**, and **blue/green** strategies from the lecture.
+
+### Step 6 — Add GitHub Secrets
 
 GitHub Secrets store sensitive values that your workflows can access without exposing them in code.
 
@@ -405,7 +458,8 @@ GitHub Secrets store sensitive values that your workflows can access without exp
 | `AWS_ACCOUNT_ID` | Your 12-digit AWS account ID | `199865934287` |
 | `AWS_REGION` | The AWS region where you created your ECR repo | `us-east-2` |
 | `ECR_REPOSITORY` | Name of your ECR repository | `todo-app` |
-| `APP_RUNNER_SERVICE` | Name of your App Runner service | `todo-app` |
+| `ECS_CLUSTER` | ECS cluster name (from CloudFormation outputs) | `todo-app` |
+| `ECS_SERVICE` | ECS service name (from CloudFormation outputs) | `todo-app` |
 | `MONGODB_URI` | Your Atlas connection string | `mongodb+srv://...` |
 
 > **Why secrets instead of hardcoded values?** Region, repo names, and account IDs vary per student and per environment. Storing them as secrets keeps the workflow portable — the same `deploy.yml` works for everyone without editing the file. In a team setting, you'd have separate secret sets for dev, staging, and production.
@@ -427,7 +481,7 @@ The deploy workflow is already provided at `.github/workflows/deploy.yml`. Open 
 Key things to notice:
 - **No hardcoded values** — region, repo name, and service name all come from `secrets.*`
 - The `test` job gates the `deploy` job via `needs: test`
-- Images are tagged with both the commit SHA (for rollback) and `latest` (for App Runner)
+- Images are tagged with both the commit SHA (for rollback) and `latest` (what the ECS task definition references)
 
 > **If you want to customize it**, the workflow is fully yours to modify. But it should work as-is once your GitHub Secrets are configured correctly.
 
@@ -438,16 +492,18 @@ Key things to notice:
 | **Source** | `on: push` trigger | CodeConnections (GitHub webhook) |
 | **Test** | `test` job (lint) | CodeBuild `pre_build` phase |
 | **Build** | `docker build` + `docker push` | CodeBuild `build` phase → artifact to S3/ECR |
-| **Deploy** | `apprunner start-deployment` | CodeDeploy targeting ECS/Beanstalk |
+| **Deploy** | `ecs update-service --force-new-deployment` | CodeDeploy targeting ECS/Beanstalk |
 | **Orchestration** | `needs: test` (job dependency) | CodePipeline stage ordering |
 
 > **Key insight:** The `needs: test` dependency creates the same gating behavior as CodePipeline: **failed stages block downstream stages**. A failing lint check stops the entire deploy, just as a failed CodeBuild phase halts the CodePipeline. Open `aws-native/pipeline.yml` to see a full CodePipeline CloudFormation template that does the same thing — every stage is annotated with its `deploy.yml` equivalent.
 
-### Step 2 — Commit and push
+### Step 2 — Trigger the first automated deploy
+
+Make any small change (e.g. add a comment to `deploy.yml`) and push to trigger the workflow:
 
 ```bash
-git add .github/workflows/deploy.yml
-git commit -m "Add deploy workflow: ECR push + App Runner deploy"
+git add -A
+git commit -m "Trigger first automated deploy"
 git push
 ```
 
@@ -455,13 +511,13 @@ git push
 
 1. Go to **Actions** tab — you should see both CI and Deploy workflows running
 2. Wait for the deploy job to complete (2-3 minutes for the Docker build)
-3. Go to the **AWS Console** → **App Runner** → your service
-4. Wait for the status to change to **Running** (first deploy takes 3-5 minutes)
-5. Click the **Default domain** URL — your app should be live!
+3. The workflow pushes a new image to ECR, then triggers an ECS rolling deployment
+4. Go to the **AWS Console** → **ECS** → **Clusters** → **todo-app** → **Services** to watch the deployment status
+5. Click the **Default domain** URL to verify — it should match the seed image you pushed manually, but now it was deployed through the pipeline
 
 ### Test it:
 
-- [ ] Open your App Runner URL in a browser
+- [ ] Open your load balancer URL in a browser
 - [ ] Register a new user
 - [ ] Create a project and add tasks
 - [ ] Data persists (it's stored in MongoDB Atlas)
@@ -494,19 +550,19 @@ git push
 1. Go to **Actions** tab and watch the workflow
 2. The test job runs first (should pass)
 3. The deploy job builds a new Docker image and pushes it
-4. App Runner automatically pulls the new image and redeploys (rolling deployment — zero downtime)
+4. ECS performs a rolling deployment — starts new tasks with the new image, health checks pass, old tasks stop (zero downtime)
 
 ### Step 4 — Verify the deployment
 
 1. Wait 2-3 minutes after the workflow completes
-2. Refresh your App Runner URL
+2. Refresh your load balancer URL
 3. You should see your updated welcome message
 
-> **This is Continuous Deployment in action:** You pushed code, and it was automatically tested, built, containerized, and deployed — without touching the AWS Console. In an AWS-native setup, CodePipeline would show each stage transitioning from blue (in progress) to green (succeeded).
+> **This is Continuous Deployment in action:** You pushed code, and it was automatically tested, built, containerized, and deployed to ECS — without touching the AWS Console. In an AWS-native setup, CodePipeline would show each stage transitioning from blue (in progress) to green (succeeded).
 
 ### Test it:
 
-- [ ] Your code change is visible at the App Runner URL
+- [ ] Your code change is visible at the load balancer URL
 - [ ] The entire process (push → live) took under 5 minutes
 - [ ] Both workflow runs show in the Actions tab
 
@@ -518,7 +574,7 @@ git push
 
 ### 6a. Infrastructure as Code with CloudFormation
 
-In Parts 2-3 you created AWS resources (ECR, App Runner) by clicking through the Console. This is like manually configuring a server — it works once but isn't reproducible, version-controlled, or reviewable.
+In Part 2 you created AWS resources using CloudFormation — but you could also imagine clicking through the Console to create each resource manually. That approach works once but isn't reproducible, version-controlled, or reviewable.
 
 **CloudFormation** solves this by letting you define your infrastructure in a template file:
 
@@ -533,8 +589,9 @@ In Parts 2-3 you created AWS resources (ECR, App Runner) by clicking through the
 Open `cloudformation/infrastructure.yml` in your repository. This template creates the same resources you built manually:
 
 - An ECR repository
-- An IAM role for App Runner to access ECR
-- An App Runner service configured to pull from that ECR repository
+- IAM roles for ECS to pull images from ECR and write logs
+- An ECS cluster, task definition, and service
+- An Application Load Balancer with security groups
 
 Notice how the template uses:
 - **Parameters** — like function arguments (App name, port, MongoDB URI)
@@ -550,7 +607,7 @@ Add your answers as YAML comments at the bottom of `cloudformation/infrastructur
 
 1. What does the `Resources` section define?
 2. What is the `!Sub` function doing in the `ImageIdentifier` property?
-3. If you deleted this CloudFormation stack, what would happen to your App Runner service and ECR repository?
+3. If you deleted this CloudFormation stack, what would happen to your ECS service, load balancer, and all the other resources?
 4. What is one advantage of defining infrastructure in a template file vs. clicking through the Console?
 
 ### 6b. GitHub Actions vs AWS CodePipeline
@@ -598,7 +655,7 @@ Add a file `COMPARISON.md` to the root of your repository answering:
 
 **Goal:** Understand how production deployments handle the transition from old code to new code.
 
-When App Runner deploys your new image, it doesn't just stop the old version and start the new one. There are several strategies:
+When ECS deploys your new image, it doesn't just stop the old version and start the new one. There are several strategies:
 
 ### All-at-Once
 Deploy to all instances simultaneously.
@@ -618,7 +675,7 @@ Deploy to an entirely new set of instances, then switch traffic.
 - **Cons:** Double the infrastructure cost during deploy
 - **Use when:** Production — this is the **recommended** approach
 
-> **App Runner uses rolling deployment** by default. AWS CodeDeploy supports all three strategies, and also supports **traffic shifting** for Lambda (e.g., route 10% of traffic to the new version, then gradually increase).
+> **ECS uses rolling deployment** by default (configured in the CloudFormation template via `DeploymentConfiguration`). AWS CodeDeploy supports all three strategies for ECS, and also supports **traffic shifting** for Lambda (e.g., route 10% of traffic to the new version, then gradually increase).
 
 ### Answer this question
 
@@ -632,7 +689,7 @@ Add to your `COMPARISON.md`:
 
 ### Stretch 1: Add a staging environment
 
-Create a second App Runner service called `todo-app-staging` with its own MongoDB Atlas database. Modify your deploy workflow to:
+Deploy a second CloudFormation stack called `todo-app-staging` with its own MongoDB Atlas database. Modify your deploy workflow to:
 - Deploy to **staging** on every push to `main`
 - Deploy to **production** only when a GitHub Release is published (use `on: release` trigger)
 
@@ -641,7 +698,7 @@ This mirrors the Dev → Staging → Production environment progression from the
 ### Stretch 2: Add a health check endpoint
 
 1. Create `react-nextjs-mongo/src/app/api/health/route.js` that returns `{ status: "ok", timestamp: ... }`
-2. Configure App Runner to use `/api/health` as its health check path
+2. Update the `HealthCheckPath` in the CloudFormation template to `/api/health`
 3. Add a step in your deploy workflow that waits for the health check to pass after deploy
 
 > This is how production systems verify a deploy succeeded — **CloudWatch** would monitor this endpoint and trigger alarms if it starts failing.
@@ -697,7 +754,7 @@ When you push your code, an automated grading workflow checks:
 4. Deploy workflow file exists at `.github/workflows/deploy.yml`
 5. Deploy workflow includes AWS credential configuration
 6. Deploy workflow includes ECR login and push steps
-7. Deploy workflow includes App Runner deployment step
+7. Deploy workflow includes ECS deployment step
 8. CloudFormation template exists with answers to questions
 9. The `MONGODB_URI` environment variable is used in `db.js` (not hardcoded)
 10. The Dockerfile builds successfully
@@ -709,9 +766,11 @@ When you push your code, an automated grading workflow checks:
 
 ## Troubleshooting
 
-- **AWS credentials not working:** Verify the IAM user `github-actions-deployer` has the correct policies attached (`AmazonEC2ContainerRegistryPowerUser` and `AWSAppRunnerFullAccess`). Double-check the access key ID and secret in your GitHub Secrets.
+- **AWS credentials not working:** Verify the IAM user `github-actions-deployer` has the correct policies attached (`AmazonEC2ContainerRegistryPowerUser` and `AmazonECS_FullAccess`). Double-check the access key ID and secret in your GitHub Secrets.
+- **CloudFormation stack fails:** Check the Events tab in the CloudFormation console for the specific error. Common issues: invalid VPC/subnet IDs, subnets not in different AZs, or missing `--capabilities CAPABILITY_IAM` flag.
+- **ECS task keeps stopping:** Check the logs in CloudWatch under `/ecs/todo-app`. Common causes: bad `MONGODB_URI`, missing environment variables, or the container crashing on startup.
 - **ECR push denied:** Verify your `AWS_ACCOUNT_ID` secret is correct (12 digits, no dashes).
-- **App Runner stays "Operation in progress":** First deploys take 3-5 minutes. Check the App Runner logs in the AWS Console for errors.
+- **ECS service stuck deploying:** Check the ECS console → Service → Deployments tab. If tasks keep failing health checks, check the CloudWatch logs and verify the load balancer security group allows port 80 inbound.
 - **MongoDB connection errors in production:** Verify your Atlas Network Access allows `0.0.0.0/0` and the `MONGODB_URI` secret has the correct password and database name.
 - **Workflow doesn't trigger:** Make sure the workflow file is in `.github/workflows/` (not `github/` — note the leading dot) and pushed to `main`.
 - **Docker build fails in Actions:** The Dockerfile `WORKDIR` and `COPY` paths must match. Verify the `build` context path in the workflow matches where `Dockerfile` lives.
@@ -730,7 +789,8 @@ When you push your code, an automated grading workflow checks:
 | **AWS CodeBuild** | AWS managed build service (configured via `buildspec.yml`) |
 | **AWS CodeDeploy** | AWS deployment service supporting all-at-once, rolling, and blue/green |
 | **ECR** | Amazon Elastic Container Registry — private Docker image storage |
-| **App Runner** | AWS managed container service with auto-scaling + HTTPS |
+| **ECS Fargate** | AWS serverless container service — define tasks, AWS manages servers |
+| **ALB** | Application Load Balancer — distributes traffic, provides a stable URL |
 | **Elastic Beanstalk** | AWS PaaS — deploy code without managing EC2 instances directly |
 | **CloudFormation** | AWS Infrastructure as Code — define resources in JSON/YAML templates |
 | **AWS SAM** | Simplified CloudFormation syntax for serverless applications |

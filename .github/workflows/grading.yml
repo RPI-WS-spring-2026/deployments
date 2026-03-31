@@ -82,12 +82,12 @@ jobs:
             exit 1
           fi
 
-      - name: "Check 8: Deploy workflow has App Runner deployment"
+      - name: "Check 8: Deploy workflow has ECS deployment"
         run: |
-          if grep -q "apprunner" .github/workflows/deploy.yml; then
-            echo "✓ Deploy workflow includes App Runner deployment"
+          if grep -q "ecs update-service\|ecs" .github/workflows/deploy.yml; then
+            echo "✓ Deploy workflow includes ECS deployment"
           else
-            echo "✗ Deploy workflow missing App Runner deployment step"
+            echo "✗ Deploy workflow missing ECS deployment step"
             exit 1
           fi
 

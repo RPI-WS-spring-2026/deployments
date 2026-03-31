@@ -11,7 +11,7 @@ GitHub Actions (what you built)          AWS-Native (what's in this directory)
   on: push: branches: [main]       →      Source stage (CodeConnections webhook)
   test job (npm run lint)           →      buildspec.yml pre_build phase
   deploy job (docker build/push)    →      buildspec.yml build + post_build phases
-  App Runner start-deployment       →      Deploy stage (Lambda trigger)
+  ECS update-service                →      Deploy stage (CodeDeploy to ECS)
 
 GitHub Secrets                      →    AWS Parameter Store / Secrets Manager
 actions/checkout@v4                 →    CodePipeline Source stage (automatic)
@@ -42,8 +42,8 @@ aws-actions/amazon-ecr-login        →    buildspec.yml pre_build (aws ecr get-
 - **AWS-Native:** CodePipeline has a built-in **Manual Approval** action. Uncomment the Approval stage in `pipeline.yml` to switch from Continuous Deployment to Continuous Delivery.
 
 ### Deployment strategies
-- **GitHub Actions:** You implement deployment logic yourself (the `aws apprunner start-deployment` command).
-- **AWS-Native:** CodeDeploy provides built-in **all-at-once**, **rolling**, and **blue/green** strategies with automatic rollback. You just pick one in the configuration.
+- **GitHub Actions:** You implement deployment logic yourself (the `aws ecs update-service --force-new-deployment` command).
+- **AWS-Native:** CodeDeploy provides built-in **all-at-once**, **rolling**, and **blue/green** strategies with automatic rollback for ECS services. You just pick one in the configuration.
 
 ### Cost
 - **GitHub Actions:** 2,000 free minutes/month, then $0.008/min.

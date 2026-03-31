@@ -5,7 +5,7 @@
 #   1. Tests the code (lint)
 #   2. Builds a Docker image
 #   3. Pushes the image to Amazon ECR
-#   4. Triggers a new deployment on AWS App Runner
+#   4. Triggers a rolling deployment on Amazon ECS Fargate
 #
 # REQUIRED GITHUB SECRETS (Settings → Secrets → Actions):
 #   - AWS_ACCESS_KEY_ID      (from IAM user 'github-actions-deployer')
@@ -13,7 +13,8 @@
 #   - AWS_ACCOUNT_ID         (your 12-digit AWS account ID)
 #   - AWS_REGION             (e.g. us-east-1, us-east-2)
 #   - ECR_REPOSITORY         (e.g. todo-app)
-#   - APP_RUNNER_SERVICE     (e.g. todo-app)
+#   - ECS_CLUSTER            (e.g. todo-app)
+#   - ECS_SERVICE            (e.g. todo-app)
 #   - MONGODB_URI            (MongoDB Atlas connection string)
 # =============================================================================
 
@@ -48,7 +49,7 @@ jobs:
         working-directory: ./react-nextjs-mongo
 
   # ---------------------------------------------------------------------------
-  # Job 2: Deploy — build image, push to ECR, deploy to App Runner
+  # Job 2: Deploy — build image, push to ECR, deploy to ECS
   # Only runs after tests pass and only on the main branch
   # ---------------------------------------------------------------------------
   deploy:
@@ -75,7 +76,7 @@ jobs:
 
       # Build the Docker image and push it to ECR with two tags:
       #   1. The git commit SHA (for traceability and rollback)
-      #   2. "latest" (what App Runner pulls by default)
+      #   2. "latest" (what the ECS task definition references)
       - name: Build, tag, and push Docker image to ECR
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
@@ -92,21 +93,22 @@ jobs:
 
           echo "✓ Image pushed: $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
 
-      # Tell App Runner to pull the latest image and redeploy
-      - name: Deploy to App Runner
+      # Tell ECS to pull the latest image and perform a rolling deployment.
+      # --force-new-deployment makes ECS start new tasks even if the task
+      # definition hasn't changed (because we pushed a new :latest image).
+      - name: Deploy to ECS
         env:
-          APP_RUNNER_SERVICE: ${{ secrets.APP_RUNNER_SERVICE }}
+          ECS_CLUSTER: ${{ secrets.ECS_CLUSTER }}
+          ECS_SERVICE: ${{ secrets.ECS_SERVICE }}
         run: |
-          SERVICE_ARN=$(aws apprunner list-services \
-            --query "ServiceSummaryList[?ServiceName=='${APP_RUNNER_SERVICE}'].ServiceArn" \
-            --output text)
+          echo "Triggering ECS rolling deployment..."
+          aws ecs update-service \
+            --cluster "${ECS_CLUSTER}" \
+            --service "${ECS_SERVICE}" \
+            --force-new-deployment
 
-          if [ -z "$SERVICE_ARN" ] || [ "$SERVICE_ARN" = "None" ]; then
-            echo "ERROR: App Runner service '${APP_RUNNER_SERVICE}' not found."
-            echo "Make sure you created the service in the AWS Console (Part 2)."
-            exit 1
-          fi
-
-          echo "Triggering deployment for service: $SERVICE_ARN"
-          aws apprunner start-deployment --service-arn "$SERVICE_ARN"
-          echo "✓ Deployment triggered. Check the App Runner console for status."
+          echo "✓ Deployment triggered. ECS will:"
+          echo "  1. Start new task(s) with the latest image"
+          echo "  2. Wait for health checks to pass"
+          echo "  3. Stop old task(s)"
+          echo "  Check the ECS console for status."

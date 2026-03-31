@@ -70,7 +70,7 @@ phases:
 
   # ---------------------------------------------------------------------------
   # Post-build phase — push the image and prepare deployment artifacts
-  # GitHub Actions equivalent: docker push + App Runner deployment step
+  # GitHub Actions equivalent: docker push + ECS deployment step
   # ---------------------------------------------------------------------------
   post_build:
     commands:
