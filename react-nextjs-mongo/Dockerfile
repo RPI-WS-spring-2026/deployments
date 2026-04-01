@@ -7,15 +7,11 @@ RUN npm install
 
 COPY . .
 
+# Build the Next.js production bundle at image build time
+RUN npm run build
+
 EXPOSE 3003
 
-# Use NODE_ENV to decide: production builds and starts, dev runs hot-reload
-# Default to dev for local Docker Compose usage
-ENV NODE_ENV=development
-
-# Build for production when NODE_ENV=production, otherwise run dev server
-CMD if [ "$NODE_ENV" = "production" ]; then \
-      npm run build && npm run start; \
-    else \
-      npm run dev; \
-    fi
+# Default to production start. For local dev, docker-compose overrides this
+# with `npm run dev` via the command directive.
+CMD ["npm", "run", "start"]

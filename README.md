@@ -334,9 +334,11 @@ Go to the **Actions** tab and watch the CI workflow:
 
 ---
 
-## Part 2: Set Up AWS Infrastructure (~15 min)
+## Part 2: Manual Deploy to AWS (~25 min)
 
-**Goal:** Create an ECR repository, push a seed image, and deploy ECS infrastructure using CloudFormation.
+**Goal:** Deploy the app to AWS by hand — create the infrastructure, build and push the Docker image, and verify the app runs in the cloud. You'll automate this in Part 3.
+
+> **Why manual first?** Deploying manually before automating teaches you what the pipeline actually does. If the automated pipeline fails later, you'll know which step broke because you've done each one yourself.
 
 ### Background: AWS Container Services
 
@@ -349,17 +351,111 @@ AWS offers several ways to run containers:
 | **Elastic Beanstalk** | Everything (EC2, ALB, ASG) | Quick deploys from source code |
 | **EKS (Kubernetes)** | Kubernetes control plane | Teams already using Kubernetes |
 
-We use **ECS Fargate** — you define what container to run (image, CPU, memory, env vars) and AWS handles the underlying compute. Combined with a **CloudFormation template**, the entire infrastructure is created with a single command.
+We use **ECS Fargate** — you define what container to run (image, CPU, memory, env vars) and AWS handles the underlying compute.
 
 ### Step 1 — Log into the AWS Console
 
 1. Log into the [AWS Management Console](https://console.aws.amazon.com/)
-2. Pick a region (e.g. **us-east-1** or **us-east-2**) and note it — you'll use the same region for all AWS resources and in your `AWS_REGION` GitHub Secret
+2. Pick a region (e.g. **us-east-1** or **us-east-2**) and **use the same region for everything** in this exercise
 3. Note your **AWS Account ID** (top right corner → click your username)
 
-### Step 2 — Create an IAM User for GitHub Actions
+### Step 2 — Create an ECR Repository
 
-GitHub Actions needs AWS credentials to push images to ECR and trigger deployments. You'll create a dedicated **IAM user** with only the permissions it needs — this follows the **principle of least privilege**.
+Amazon Elastic Container Registry (ECR) is a private Docker registry — like Docker Hub, but in your AWS account.
+
+1. In the AWS Console, search for **ECR** and open it
+2. Click **Create repository**
+3. Settings:
+   - **Visibility:** Private
+   - **Repository name:** `todo-app`
+4. Click **Create repository**
+5. Note the **URI** — it looks like: `123456789012.dkr.ecr.us-east-2.amazonaws.com/todo-app`
+
+### Step 3 — Build and push your Docker image
+
+Make sure the **AWS CLI** is installed and configured:
+
+```bash
+aws configure
+```
+
+Enter your access key, secret key, region, and `json` for output format.
+
+Now build and push (replace the account ID and region with your own):
+
+```bash
+# Log Docker into ECR
+aws ecr get-login-password --region YOUR_REGION \
+  | docker login --username AWS --password-stdin \
+    YOUR_ACCOUNT_ID.dkr.ecr.YOUR_REGION.amazonaws.com
+
+# Build for linux/amd64 (ECS Fargate runs x86_64, even if your laptop is ARM/Apple Silicon)
+docker buildx build --platform linux/amd64 \
+  -t YOUR_ACCOUNT_ID.dkr.ecr.YOUR_REGION.amazonaws.com/todo-app:latest \
+  --push ./react-nextjs-mongo
+```
+
+> **Important:** The `--platform linux/amd64` flag is required if you're on an Apple Silicon Mac (M1/M2/M3). Without it, you'll get a "image manifest does not contain descriptor matching platform" error when ECS tries to run your container.
+
+Verify the image appears in the AWS Console under **ECR** → **Repositories** → **todo-app** → **Images**.
+
+### Step 4 — Create the ECS infrastructure
+
+You can create the ECS cluster, task definition, and service through the AWS Console:
+
+#### 4a. Create an ECS Cluster
+
+1. In the AWS Console, search for **ECS** and open it
+2. Click **Create cluster**
+3. **Cluster name:** `todo-app`
+4. **Infrastructure:** select **AWS Fargate** (serverless)
+5. Click **Create**
+
+#### 4b. Create a Task Definition
+
+1. Go to **Task definitions** → **Create new task definition**
+2. **Task definition family:** `todo-app`
+3. **Launch type:** Fargate
+4. **CPU:** 0.25 vCPU, **Memory:** 0.5 GB
+5. **Container definitions** → click **Add container**:
+   - **Name:** `todo-app`
+   - **Image URI:** `YOUR_ACCOUNT_ID.dkr.ecr.YOUR_REGION.amazonaws.com/todo-app:latest`
+   - **Port mappings:** Container port `3003`, Protocol `TCP`
+   - **Environment variables:**
+     - `MONGODB_URI` = your Atlas connection string
+     - `NODE_ENV` = `production`
+6. Click **Create**
+
+#### 4c. Create a Service
+
+1. Go to **Clusters** → **todo-app** → **Services** tab → **Create**
+2. **Launch type:** Fargate
+3. **Task definition:** select `todo-app` (latest revision)
+4. **Service name:** `todo-app`
+5. **Desired tasks:** 1
+6. **Networking:**
+   - Select your default VPC
+   - Select at least 2 subnets in different AZs
+   - **Security group:** Create a new one allowing inbound TCP port `3003` from anywhere (0.0.0.0/0)
+   - **Public IP:** Turn ON (Auto-assign public IP)
+7. Click **Create**
+
+### Step 5 — Verify the app is running
+
+1. Go to **Clusters** → **todo-app** → **Services** → **todo-app** → **Tasks** tab
+2. Click on the running task
+3. Find the **Public IP** in the task details
+4. Open `http://PUBLIC_IP:3003` in your browser
+
+You should see the todo app! Try registering a user, logging in, and creating a project.
+
+> **Checkpoint:** If the app works at this URL, your container, database connection, and ECS setup are all correct. Everything from here is automation.
+
+> **Troubleshooting:** If the task keeps stopping, click on the task → **Logs** tab to see the container output. Common issues: bad `MONGODB_URI`, wrong port, or the image wasn't built for `linux/amd64`.
+
+### Step 6 — Create an IAM User for GitHub Actions
+
+Now that the manual deploy works, create a dedicated IAM user for the CI/CD pipeline:
 
 1. In the AWS Console, search for **IAM** and open it
 2. Go to **Users** → **Create user**
@@ -378,156 +474,62 @@ GitHub Actions needs AWS credentials to push images to ECR and trigger deploymen
 
 > **Why a dedicated IAM user?** Never use your root account or personal credentials in CI/CD. A dedicated user with scoped permissions limits the blast radius if credentials are compromised. In a production environment you'd go further and use **OIDC federation** (no long-lived credentials at all) — see the Discussion Questions.
 
-### Step 3 — Create an ECR Repository
-
-Amazon Elastic Container Registry (ECR) is a private Docker registry — like Docker Hub, but in your AWS account. In the AWS-native pipeline, CodeBuild would push build **artifacts** to S3. Since we're deploying containers, ECR serves the same purpose: it stores the deployable artifact (the Docker image).
-
-1. In the AWS Console, search for **ECR** and open it
-2. Click **Create repository**
-3. Settings:
-   - **Visibility:** Private
-   - **Repository name:** `todo-app`
-4. Click **Create repository**
-5. Note the **URI** — it looks like: `123456789012.dkr.ecr.us-east-2.amazonaws.com/todo-app`
-
-### Step 4 — Push a seed image to ECR
-
-The ECS infrastructure (next step) needs an image in ECR before it can start. You'll push your first image manually from your local machine. After this, the GitHub Actions workflow handles all future pushes automatically.
-
-First, make sure the **AWS CLI** is installed and configured with your IAM user credentials:
-
-```bash
-aws configure
-```
-
-Enter:
-- **Access Key ID:** from Step 2
-- **Secret Access Key:** from Step 2
-- **Default region:** your region (e.g. `us-east-2`)
-- **Output format:** `json`
-
-Now build and push the image (replace the account ID and region with your own):
-
-```bash
-# Log Docker into ECR
-aws ecr get-login-password --region us-east-2 \
-  | docker login --username AWS --password-stdin \
-    199865934287.dkr.ecr.us-east-2.amazonaws.com
-
-# Build the image
-docker build -t todo-app ./react-nextjs-mongo
-
-# Tag it for ECR
-docker tag todo-app:latest \
-  199865934287.dkr.ecr.us-east-2.amazonaws.com/todo-app:latest
-
-# Push it
-docker push 199865934287.dkr.ecr.us-east-2.amazonaws.com/todo-app:latest
-```
-
-> **Replace `199865934287` and `us-east-2`** with your own account ID and region. You can find the full URI on the ECR repository page in the console.
-
-Verify the image appears in the AWS Console under **ECR** → **Repositories** → **todo-app** → **Images**.
-
-### Step 5 — Deploy the ECS infrastructure with CloudFormation
-
-Instead of clicking through the console to create a cluster, load balancer, security groups, and service, you'll deploy everything with a single CloudFormation command. This is **Infrastructure as Code** in action.
-
-First, get your default VPC and subnet IDs:
-
-```bash
-# Get your default VPC ID
-aws ec2 describe-vpcs --filters "Name=isDefault,Values=true" \
-  --query "Vpcs[0].VpcId" --output text
-
-# Get subnet IDs (you need at least 2 in different AZs)
-aws ec2 describe-subnets --filters "Name=vpc-id,Values=YOUR_VPC_ID" \
-  --query "Subnets[*].[SubnetId,AvailabilityZone]" --output table
-```
-
-Now deploy the stack (replace the placeholder values):
-
-```bash
-aws cloudformation deploy \
-  --template-file cloudformation/infrastructure.yml \
-  --stack-name todo-app \
-  --parameter-overrides \
-      ImageUri=199865934287.dkr.ecr.us-east-2.amazonaws.com/todo-app:latest \
-      MongoDBUri="YOUR_ATLAS_CONNECTION_STRING" \
-      VpcId=vpc-xxxxxxxx \
-      SubnetIds=subnet-aaaaaaaa,subnet-bbbbbbbb \
-  --capabilities CAPABILITY_IAM
-```
-
-> **What just happened?** CloudFormation read the template and created 9 resources: an ECS cluster, task definition, service, load balancer, target group, listener, two security groups, a log group, and an IAM role. All from a single command. Try creating that by clicking through the console!
-
-Wait for the stack to complete (3-5 minutes), then get your app's URL:
-
-```bash
-aws cloudformation describe-stacks --stack-name todo-app \
-  --query "Stacks[0].Outputs" --output table
-```
-
-Open the **ServiceUrl** in your browser — your app should be live!
-
-> **Deployment strategy:** ECS performs a **rolling deployment** by default — it starts new tasks with the new image, waits for health checks to pass via the load balancer, then stops old tasks. This means zero downtime during deploys. Compare this to the **all-at-once**, **rolling**, and **blue/green** strategies from the lecture.
-
-### Step 6 — Add GitHub Secrets
-
-GitHub Secrets store sensitive values that your workflows can access without exposing them in code.
+### Step 7 — Add GitHub Secrets
 
 1. Go to your GitHub repository → **Settings** → **Secrets and variables** → **Actions**
 2. Click **New repository secret** for each:
 
 | Secret Name | Value | Example |
 |---|---|---|
-| `AWS_ACCESS_KEY_ID` | Access key from the IAM user you created in Step 2 | `AKIA...` |
-| `AWS_SECRET_ACCESS_KEY` | Secret access key from Step 2 | |
+| `AWS_ACCESS_KEY_ID` | Access key from Step 6 | `AKIA...` |
+| `AWS_SECRET_ACCESS_KEY` | Secret access key from Step 6 | |
 | `AWS_ACCOUNT_ID` | Your 12-digit AWS account ID | `199865934287` |
-| `AWS_REGION` | The AWS region where you created your ECR repo | `us-east-2` |
+| `AWS_REGION` | The AWS region you used | `us-east-2` |
 | `ECR_REPOSITORY` | Name of your ECR repository | `todo-app` |
-| `ECS_CLUSTER` | ECS cluster name (from CloudFormation outputs) | `todo-app` |
-| `ECS_SERVICE` | ECS service name (from CloudFormation outputs) | `todo-app` |
+| `ECS_CLUSTER` | ECS cluster name from Step 4a | `todo-app` |
+| `ECS_SERVICE` | ECS service name from Step 4c | `todo-app` |
 | `MONGODB_URI` | Your Atlas connection string | `mongodb+srv://...` |
 
-> **Why secrets instead of hardcoded values?** Region, repo names, and account IDs vary per student and per environment. Storing them as secrets keeps the workflow portable — the same `deploy.yml` works for everyone without editing the file. In a team setting, you'd have separate secret sets for dev, staging, and production.
+> **Why secrets instead of hardcoded values?** Region, repo names, and account IDs vary per student and per environment. Storing them as secrets keeps the workflow portable — the same `deploy.yml` works for everyone without editing the file.
 
 > **Security note:** The AWS credentials are long-lived IAM keys. Treat them like passwords — never commit them to code, share them in chat, or reuse them across projects. In a production environment, you'd replace these with **OIDC federation** so GitHub Actions assumes an IAM Role directly with no stored credentials at all.
 
 ---
 
-## Part 3: Add the Deploy Workflow (~20 min)
+## Part 3: Automate with GitHub Actions (~15 min)
 
-**Goal:** Implement **Continuous Deployment** — push to `main` triggers test → build → push → deploy automatically.
+**Goal:** Now that you've deployed manually and know every step works, automate it. Push to `main` → tests run → image built → pushed to ECR → ECS redeploys.
 
 This is the equivalent of a full **CodePipeline** with Source → Build → Deploy stages, but defined as a GitHub Actions workflow.
 
 ### Step 1 — Review the deploy workflow
 
-The deploy workflow is already provided at `.github/workflows/deploy.yml`. Open it and read through the comments — every step is annotated.
+The deploy workflow is already provided at `.github/workflows/deploy.yml`. Open it and read through the comments — every step is annotated. Notice how each step maps to something you just did manually:
 
-Key things to notice:
-- **No hardcoded values** — region, repo name, and service name all come from `secrets.*`
-- The `test` job gates the `deploy` job via `needs: test`
-- Images are tagged with both the commit SHA (for rollback) and `latest` (what the ECS task definition references)
+| What you did manually | What the workflow automates |
+|---|---|
+| `docker buildx build --platform linux/amd64` | `docker build` step (GitHub Actions runners are already x86_64) |
+| `aws ecr get-login-password \| docker login` | `aws-actions/amazon-ecr-login` action |
+| `docker push` to ECR | `docker push` with SHA + latest tags |
+| (Went to ECS console to check) | `aws ecs update-service --force-new-deployment` |
 
-> **If you want to customize it**, the workflow is fully yours to modify. But it should work as-is once your GitHub Secrets are configured correctly.
+> **Key difference:** On GitHub Actions runners (ubuntu-latest), you don't need `--platform linux/amd64` because the runner is already x86_64. The platform flag is only needed when building on ARM Macs.
 
 ### Understanding the workflow — mapping to AWS services
 
 | Pipeline Stage | GitHub Actions Step | AWS-Native Equivalent |
 |---------------|--------------------|-----------------------|
 | **Source** | `on: push` trigger | CodeConnections (GitHub webhook) |
-| **Test** | `test` job (lint) | CodeBuild `pre_build` phase |
+| **Test** | `test` job (lint + unit tests) | CodeBuild `pre_build` phase |
 | **Build** | `docker build` + `docker push` | CodeBuild `build` phase → artifact to S3/ECR |
-| **Deploy** | `ecs update-service --force-new-deployment` | CodeDeploy targeting ECS/Beanstalk |
+| **Deploy** | `ecs update-service --force-new-deployment` | CodeDeploy targeting ECS |
 | **Orchestration** | `needs: test` (job dependency) | CodePipeline stage ordering |
 
 > **Key insight:** The `needs: test` dependency creates the same gating behavior as CodePipeline: **failed stages block downstream stages**. A failing lint check stops the entire deploy, just as a failed CodeBuild phase halts the CodePipeline. Open `aws-native/pipeline.yml` to see a full CodePipeline CloudFormation template that does the same thing — every stage is annotated with its `deploy.yml` equivalent.
 
 ### Step 2 — Trigger the first automated deploy
 
-Make any small change (e.g. add a comment to `deploy.yml`) and push to trigger the workflow:
+Push a change to trigger the workflow:
 
 ```bash
 git add -A
@@ -540,25 +542,23 @@ git push
 1. Go to **Actions** tab — you should see both CI and Deploy workflows running
 2. Wait for the deploy job to complete (2-3 minutes for the Docker build)
 3. The workflow pushes a new image to ECR, then triggers an ECS rolling deployment
-4. Go to the **AWS Console** → **ECS** → **Clusters** → **todo-app** → **Services** to watch the deployment status
-5. Click the **Default domain** URL to verify — it should match the seed image you pushed manually, but now it was deployed through the pipeline
+4. Go to the **AWS Console** → **ECS** → **Clusters** → **todo-app** → **Services** to watch the deployment
 
 ### Test it:
 
-- [ ] Open your load balancer URL in a browser
-- [ ] Register a new user
-- [ ] Create a project and add tasks
-- [ ] Data persists (it's stored in MongoDB Atlas)
+- [ ] The deploy workflow completed with green checkmarks
+- [ ] ECS shows a new deployment in progress or completed
+- [ ] The app still works at your public IP / load balancer URL
 
 ---
 
 ## Part 4: See CI/CD in Action (~10 min)
 
-**Goal:** Experience the full **Continuous Deployment** cycle: push code → tests run → app deploys.
+**Goal:** Make a code change and watch it go from push to production automatically — no manual Docker build, no ECR push, no ECS console.
 
 ### Step 1 — Make a visible change
 
-Edit `react-nextjs-mongo/src/app/page.js` and change the welcome message or page title to something recognizable, like:
+Edit `react-nextjs-mongo/src/app/page.js` and change the welcome message:
 
 ```js
 // Change the heading text to include your name or a version
@@ -576,23 +576,23 @@ git push
 ### Step 3 — Watch the pipeline
 
 1. Go to **Actions** tab and watch the workflow
-2. The test job runs first (should pass)
-3. The deploy job builds a new Docker image and pushes it
-4. ECS performs a rolling deployment — starts new tasks with the new image, health checks pass, old tasks stop (zero downtime)
+2. The test job runs first (lint + unit tests)
+3. The deploy job builds a new Docker image and pushes it to ECR
+4. ECS performs a rolling deployment — new task starts, health checks pass, old task stops
 
 ### Step 4 — Verify the deployment
 
 1. Wait 2-3 minutes after the workflow completes
-2. Refresh your load balancer URL
+2. Refresh your app URL
 3. You should see your updated welcome message
 
-> **This is Continuous Deployment in action:** You pushed code, and it was automatically tested, built, containerized, and deployed to ECS — without touching the AWS Console. In an AWS-native setup, CodePipeline would show each stage transitioning from blue (in progress) to green (succeeded).
+> **Compare to Part 2:** In Part 2, deploying a change required: edit code → `docker buildx build` → `docker push` → go to ECS console. Now it's just: edit code → `git push`. The pipeline does the rest. That's the value of CI/CD.
 
 ### Test it:
 
-- [ ] Your code change is visible at the load balancer URL
+- [ ] Your code change is visible at the app URL
 - [ ] The entire process (push → live) took under 5 minutes
-- [ ] Both workflow runs show in the Actions tab
+- [ ] You didn't touch the AWS Console
 
 ---
 
@@ -794,14 +794,21 @@ When you push your code, an automated grading workflow checks:
 
 ## Troubleshooting
 
-- **AWS credentials not working:** Verify the IAM user `github-actions-deployer` has the correct policies attached (`AmazonEC2ContainerRegistryPowerUser` and `AmazonECS_FullAccess`). Double-check the access key ID and secret in your GitHub Secrets.
-- **CloudFormation stack fails:** Check the Events tab in the CloudFormation console for the specific error. Common issues: invalid VPC/subnet IDs, subnets not in different AZs, or missing `--capabilities CAPABILITY_IAM` flag.
-- **ECS task keeps stopping:** Check the logs in CloudWatch under `/ecs/todo-app`. Common causes: bad `MONGODB_URI`, missing environment variables, or the container crashing on startup.
-- **ECR push denied:** Verify your `AWS_ACCOUNT_ID` secret is correct (12 digits, no dashes).
-- **ECS service stuck deploying:** Check the ECS console → Service → Deployments tab. If tasks keep failing health checks, check the CloudWatch logs and verify the load balancer security group allows port 80 inbound.
-- **MongoDB connection errors in production:** Verify your Atlas Network Access allows `0.0.0.0/0` and the `MONGODB_URI` secret has the correct password and database name.
+### Manual deploy (Part 2)
+
+- **ECR push 403 Forbidden:** Your Docker login expired. Re-run `aws ecr get-login-password ... | docker login ...` before pushing.
+- **ECS "image manifest does not contain descriptor matching platform linux/amd64":** You built on an ARM Mac without `--platform linux/amd64`. Rebuild with: `docker buildx build --platform linux/amd64 -t YOUR_ECR_URI --push ./react-nextjs-mongo`
+- **ECS task keeps stopping:** Go to ECS → Clusters → todo-app → Tasks → click the stopped task → **Logs** tab. Common causes: bad `MONGODB_URI`, wrong port, or missing `NODE_ENV=production`.
+- **MongoDB connection errors:** Verify your Atlas Network Access allows `0.0.0.0/0` and the connection string has the correct password and database name.
+- **Can't reach the app via public IP:** Check the security group on your ECS service allows inbound TCP on port `3003` from `0.0.0.0/0`.
+
+### GitHub Actions (Part 3)
+
+- **AWS credentials not working:** Verify the IAM user `github-actions-deployer` has `AmazonEC2ContainerRegistryPowerUser` and `AmazonECS_FullAccess` policies. Double-check the access key in your GitHub Secrets.
+- **ECR push denied:** Verify `AWS_ACCOUNT_ID` is correct (12 digits, no dashes) and `AWS_REGION` matches where your ECR repo was created.
+- **ECS ClusterNotFoundException:** The `ECS_CLUSTER` secret doesn't match an actual cluster. Run `aws ecs list-clusters --region YOUR_REGION` to check.
 - **Workflow doesn't trigger:** Make sure the workflow file is in `.github/workflows/` (not `github/` — note the leading dot) and pushed to `main`.
-- **Docker build fails in Actions:** The Dockerfile `WORKDIR` and `COPY` paths must match. Verify the `build` context path in the workflow matches where `Dockerfile` lives.
+- **Docker build fails in Actions:** GitHub Actions runners are x86_64 so no `--platform` flag is needed. Check that the Dockerfile path (`./react-nextjs-mongo`) is correct.
 
 ---
 
