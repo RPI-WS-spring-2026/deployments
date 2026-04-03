@@ -7,6 +7,6 @@
 
 aws_region: us-east-2
 aws_account_id: "199865934287"
-ecr_repository: todo-app
+ecr_repository: todo-app2
 ecs_cluster: default
 ecs_service: todo-app-ec13
