@@ -728,7 +728,74 @@ Add to your `COMPARISON.md`:
 
 ---
 
-## Part 7: Stretch Goals (Optional)
+## Part 7: Custom Domain Name (Optional)
+
+**Goal:** Point a custom domain (e.g. `todo.yourdomain.com`) at your deployed app instead of using the raw AWS load balancer URL.
+
+Your app is currently accessible via the ALB DNS name — something like:
+```
+ecs-express-gateway-alb-xxxxxxxx-123456789.us-east-2.elb.amazonaws.com
+```
+
+That works, but it's not memorable. Here's how to point a real domain at it.
+
+### Option A: Using Route 53 (AWS DNS)
+
+If your domain is managed in Route 53:
+
+1. Open **Route 53** in the AWS Console → **Hosted zones** → select your domain
+2. Click **Create record**
+3. Settings:
+   - **Record name:** `todo` (this creates `todo.yourdomain.com`)
+   - **Record type:** `A`
+   - **Alias:** toggle ON
+   - **Route traffic to:** "Alias to Application and Classic Load Balancer"
+   - **Region:** `us-east-2`
+   - **Load balancer:** select your ALB (starts with `ecs-express-gateway-alb-`)
+4. Click **Create records**
+
+> **Why Alias instead of CNAME?** Route 53 Alias records are free, work at the zone apex (`yourdomain.com`, not just subdomains), and resolve directly to the ALB's IP addresses. CNAME records add an extra DNS lookup and can't be used at the apex.
+
+### Option B: Using any DNS provider (Cloudflare, Namecheap, GoDaddy, etc.)
+
+If your domain is managed outside AWS:
+
+1. Log into your DNS provider's dashboard
+2. Create a **CNAME record**:
+   - **Name / Host:** `todo` (for `todo.yourdomain.com`)
+   - **Value / Target:** your ALB DNS name (e.g. `ecs-express-gateway-alb-xxxxxxxx-123456789.us-east-2.elb.amazonaws.com`)
+   - **TTL:** 300 (5 minutes)
+3. Wait for DNS propagation (usually 1-5 minutes, sometimes up to an hour)
+
+### Adding HTTPS with a free SSL certificate
+
+The ALB currently serves HTTP only (port 80). To add HTTPS:
+
+1. **Request a certificate** in **AWS Certificate Manager (ACM)**:
+   - Open ACM in the AWS Console (**make sure you're in the same region as your ALB**)
+   - Click **Request a certificate** → **Public certificate**
+   - **Domain name:** `todo.yourdomain.com`
+   - **Validation method:** DNS validation
+   - ACM gives you a CNAME record to add to your DNS — add it and wait for validation
+
+2. **Add an HTTPS listener to the ALB:**
+   - Open **EC2** → **Load Balancers** → select your ALB
+   - **Listeners** tab → **Add listener**
+   - **Protocol:** HTTPS, **Port:** 443
+   - **Default action:** Forward to your existing target group
+   - **Certificate:** select the ACM certificate you just created
+
+3. **Redirect HTTP to HTTPS** (optional but recommended):
+   - Edit the existing HTTP:80 listener
+   - Change the default action to **Redirect** → HTTPS, port 443
+
+Your app is now accessible at `https://todo.yourdomain.com` with a free, auto-renewing SSL certificate.
+
+> **In production:** HTTPS is not optional. Browsers increasingly block or warn about HTTP-only sites, and any site handling passwords (like your login page) must use HTTPS to prevent credential interception.
+
+---
+
+## Part 8: Stretch Goals (Optional)
 
 ### Stretch 1: Add a staging environment
 
@@ -784,26 +851,6 @@ git add -A
 git commit -m "CI/CD deployment pipeline complete"
 git push
 ```
-
----
-
-## Automated Grading
-
-When you push your code, an automated grading workflow checks:
-
-1. CI workflow file exists at `.github/workflows/ci.yml`
-2. CI workflow includes a linting step
-3. CI workflow includes a Docker build step
-4. Deploy workflow file exists at `.github/workflows/deploy.yml`
-5. Deploy workflow includes AWS credential configuration
-6. Deploy workflow includes ECR login and push steps
-7. Deploy workflow includes ECS deployment step
-8. CloudFormation template exists with answers to questions
-9. The `MONGODB_URI` environment variable is used in `db.js` (not hardcoded)
-10. The Dockerfile builds successfully
-11. `COMPARISON.md` exists with deployment strategy and tooling answers
-
-**To check your results:** Go to the **Actions** tab. A green check means all grading checks passed.
 
 ---
 
