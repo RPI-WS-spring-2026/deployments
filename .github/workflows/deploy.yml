@@ -2,19 +2,18 @@
 # Deploy Workflow — CI/CD Deployment Exercise
 # =============================================================================
 # This workflow runs on pushes to main. It:
-#   1. Tests the code (lint)
+#   1. Tests the code (lint + unit tests)
 #   2. Builds a Docker image
 #   3. Pushes the image to Amazon ECR
 #   4. Triggers a rolling deployment on Amazon ECS Fargate
 #
+# Configuration is split between two places:
+#   config/deploy.yml  — non-secret values (region, cluster name, repo name)
+#   GitHub Secrets     — credentials only (AWS keys, MongoDB URI)
+#
 # REQUIRED GITHUB SECRETS (Settings → Secrets → Actions):
 #   - AWS_ACCESS_KEY_ID      (from IAM user 'github-actions-deployer')
 #   - AWS_SECRET_ACCESS_KEY  (from IAM user 'github-actions-deployer')
-#   - AWS_ACCOUNT_ID         (your 12-digit AWS account ID)
-#   - AWS_REGION             (e.g. us-east-1, us-east-2)
-#   - ECR_REPOSITORY         (e.g. todo-app)
-#   - ECS_CLUSTER            (e.g. todo-app)
-#   - ECS_SERVICE            (e.g. todo-app)
 #   - MONGODB_URI            (MongoDB Atlas connection string)
 # =============================================================================
 
@@ -27,7 +26,6 @@ on:
 jobs:
   # ---------------------------------------------------------------------------
   # Job 1: Test — gate deployment on code quality + unit tests
-  # Only lint + unit tests here (fast). Full integration/E2E tests run in ci.yml.
   # ---------------------------------------------------------------------------
   test:
     runs-on: ubuntu-latest
@@ -66,13 +64,32 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Authenticate with AWS using IAM user credentials stored in GitHub Secrets
+      # Read non-secret config from config/deploy.yml
+      # This makes values visible and debuggable (no hidden secrets)
+      - name: Load deploy config
+        id: config
+        run: |
+          echo "aws_region=$(grep 'aws_region:' config/deploy.yml | awk '{print $2}')" >> $GITHUB_OUTPUT
+          echo "aws_account_id=$(grep 'aws_account_id:' config/deploy.yml | awk '{print $2}' | tr -d '\"')" >> $GITHUB_OUTPUT
+          echo "ecr_repository=$(grep 'ecr_repository:' config/deploy.yml | awk '{print $2}')" >> $GITHUB_OUTPUT
+          echo "ecs_cluster=$(grep 'ecs_cluster:' config/deploy.yml | awk '{print $2}')" >> $GITHUB_OUTPUT
+          echo "ecs_service=$(grep 'ecs_service:' config/deploy.yml | awk '{print $2}')" >> $GITHUB_OUTPUT
+
+      - name: Print config (for debugging)
+        run: |
+          echo "Region:         ${{ steps.config.outputs.aws_region }}"
+          echo "Account ID:     ${{ steps.config.outputs.aws_account_id }}"
+          echo "ECR Repository: ${{ steps.config.outputs.ecr_repository }}"
+          echo "ECS Cluster:    ${{ steps.config.outputs.ecs_cluster }}"
+          echo "ECS Service:    ${{ steps.config.outputs.ecs_service }}"
+
+      # Authenticate with AWS using IAM user credentials (secrets — these ARE sensitive)
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
+          aws-region: ${{ steps.config.outputs.aws_region }}
 
       # Get a temporary Docker login token for ECR
       - name: Login to Amazon ECR
@@ -85,7 +102,7 @@ jobs:
       - name: Build, tag, and push Docker image to ECR
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+          ECR_REPOSITORY: ${{ steps.config.outputs.ecr_repository }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
           echo "Building Docker image..."
@@ -98,15 +115,16 @@ jobs:
 
           echo "✓ Image pushed: $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
 
-      # Tell ECS to pull the latest image and perform a rolling deployment.
-      # --force-new-deployment makes ECS start new tasks even if the task
-      # definition hasn't changed (because we pushed a new :latest image).
+      # Tell ECS to pull the latest image and perform a rolling deployment
       - name: Deploy to ECS
         env:
-          ECS_CLUSTER: ${{ secrets.ECS_CLUSTER }}
-          ECS_SERVICE: ${{ secrets.ECS_SERVICE }}
+          ECS_CLUSTER: ${{ steps.config.outputs.ecs_cluster }}
+          ECS_SERVICE: ${{ steps.config.outputs.ecs_service }}
         run: |
           echo "Triggering ECS rolling deployment..."
+          echo "  Cluster: ${ECS_CLUSTER}"
+          echo "  Service: ${ECS_SERVICE}"
+
           aws ecs update-service \
             --cluster "${ECS_CLUSTER}" \
             --service "${ECS_SERVICE}" \
@@ -116,4 +134,3 @@ jobs:
           echo "  1. Start new task(s) with the latest image"
           echo "  2. Wait for health checks to pass"
           echo "  3. Stop old task(s)"
-          echo "  Check the ECS console for status."

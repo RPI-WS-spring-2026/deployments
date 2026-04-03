@@ -474,23 +474,38 @@ Now that the manual deploy works, create a dedicated IAM user for the CI/CD pipe
 
 > **Why a dedicated IAM user?** Never use your root account or personal credentials in CI/CD. A dedicated user with scoped permissions limits the blast radius if credentials are compromised. In a production environment you'd go further and use **OIDC federation** (no long-lived credentials at all) — see the Discussion Questions.
 
-### Step 7 — Add GitHub Secrets
+### Step 7 — Configure deployment settings
+
+The pipeline uses two places for configuration:
+
+**`config/deploy.yml`** — non-secret values you can see and debug. Edit this file to match your AWS setup:
+
+```yaml
+aws_region: us-east-2
+aws_account_id: "199865934287"
+ecr_repository: todo-app
+ecs_cluster: todo-app        # must match the cluster name from Step 4a
+ecs_service: todo-app        # must match the service name from Step 4c
+```
+
+> **Tip:** If you're not sure of the exact names, run:
+> ```bash
+> aws ecs list-clusters --region us-east-2
+> aws ecs list-services --cluster todo-app --region us-east-2
+> ```
+
+**GitHub Secrets** — only for actual credentials (things that would be dangerous if leaked):
 
 1. Go to your GitHub repository → **Settings** → **Secrets and variables** → **Actions**
 2. Click **New repository secret** for each:
 
-| Secret Name | Value | Example |
-|---|---|---|
-| `AWS_ACCESS_KEY_ID` | Access key from Step 6 | `AKIA...` |
-| `AWS_SECRET_ACCESS_KEY` | Secret access key from Step 6 | |
-| `AWS_ACCOUNT_ID` | Your 12-digit AWS account ID | `199865934287` |
-| `AWS_REGION` | The AWS region you used | `us-east-2` |
-| `ECR_REPOSITORY` | Name of your ECR repository | `todo-app` |
-| `ECS_CLUSTER` | ECS cluster name from Step 4a | `todo-app` |
-| `ECS_SERVICE` | ECS service name from Step 4c | `todo-app` |
-| `MONGODB_URI` | Your Atlas connection string | `mongodb+srv://...` |
+| Secret Name | Value |
+|---|---|
+| `AWS_ACCESS_KEY_ID` | Access key from Step 6 |
+| `AWS_SECRET_ACCESS_KEY` | Secret access key from Step 6 |
+| `MONGODB_URI` | Your Atlas connection string |
 
-> **Why secrets instead of hardcoded values?** Region, repo names, and account IDs vary per student and per environment. Storing them as secrets keeps the workflow portable — the same `deploy.yml` works for everyone without editing the file.
+That's it — just 3 secrets. Everything else is in `config/deploy.yml` where you can see it, commit it, and debug it.
 
 > **Security note:** The AWS credentials are long-lived IAM keys. Treat them like passwords — never commit them to code, share them in chat, or reuse them across projects. In a production environment, you'd replace these with **OIDC federation** so GitHub Actions assumes an IAM Role directly with no stored credentials at all.
 
